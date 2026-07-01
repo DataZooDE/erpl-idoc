@@ -28,6 +28,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	RegisterIdocReaderFunctions(loader);
 	RegisterIdocTypedReaderFunctions(loader);
+	RegisterIdocEncoderFunctions(loader);
 	RegisterIdocCopyFunction(loader);
 }
 

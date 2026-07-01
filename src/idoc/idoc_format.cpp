@@ -184,6 +184,56 @@ const char *FramingName(Framing framing) {
 	return "fixed";
 }
 
+std::string ZeroPad(int64_t value, size_t width) {
+	if (value < 0) {
+		value = 0;
+	}
+	std::string digits = std::to_string(value);
+	if (digits.size() >= width) {
+		return digits.substr(digits.size() - width); // keep low-order digits
+	}
+	return std::string(width - digits.size(), '0') + digits;
+}
+
+std::string EncodeSdata(const std::vector<int64_t> &offsets, const std::vector<int64_t> &lengths,
+                        const std::vector<std::string> &values) {
+	if (offsets.size() != lengths.size() || offsets.size() != values.size()) {
+		throw std::runtime_error("EncodeSdata: offsets/lengths/values length mismatch");
+	}
+	std::string sdata(SDATA_LEN, ' ');
+	for (size_t i = 0; i < offsets.size(); i++) {
+		if (offsets[i] < 0 || lengths[i] < 0 ||
+		    static_cast<size_t>(offsets[i] + lengths[i]) > SDATA_LEN) {
+			throw std::runtime_error("EncodeSdata: field at offset " + std::to_string(offsets[i]) +
+			                         " length " + std::to_string(lengths[i]) + " exceeds SDATA bounds");
+		}
+		FieldSpec spec{"", static_cast<size_t>(offsets[i]), static_cast<size_t>(lengths[i])};
+		SetFieldRaw(sdata, spec, values[i]);
+	}
+	return sdata;
+}
+
+std::string EncodeDataRecord(const std::string &segnam, const std::string &mandt, int64_t docnum, int64_t segnum,
+                             int64_t psgnum, int64_t hlevel, const std::string &sdata) {
+	std::string rec(DATA_RECORD_LEN, ' ');
+	SetFieldRaw(rec, EDI_DD40_FIELDS[0], segnam);                 // SEGNAM(30)
+	SetFieldRaw(rec, EDI_DD40_FIELDS[1], mandt);                  // MANDT(3)
+	SetFieldRaw(rec, EDI_DD40_FIELDS[2], ZeroPad(docnum, 16));    // DOCNUM(16)
+	SetFieldRaw(rec, EDI_DD40_FIELDS[3], ZeroPad(segnum, 6));     // SEGNUM(6)
+	SetFieldRaw(rec, EDI_DD40_FIELDS[4], ZeroPad(psgnum, 6));     // PSGNUM(6)
+	SetFieldRaw(rec, EDI_DD40_FIELDS[5], ZeroPad(hlevel, 2));     // HLEVEL(2)
+	SetFieldRaw(rec, EDI_DD40_FIELDS[6], sdata);                  // SDATA(1000)
+	return rec;
+}
+
+std::string EncodeControl(const std::vector<std::string> &values) {
+	std::string rec(CONTROL_RECORD_LEN, ' ');
+	for (size_t i = 0; i < EDI_DC40_FIELDS.size() && i < values.size(); i++) {
+		SetFieldRaw(rec, EDI_DC40_FIELDS[i], values[i]);
+	}
+	return rec;
+}
+
 Framing FramingFromString(const std::string &s) {
 	std::string lower;
 	for (char c : s) {

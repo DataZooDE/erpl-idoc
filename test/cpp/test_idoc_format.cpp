@@ -133,3 +133,49 @@ TEST_CASE("bounds-checked field access throws on short records (NFR-7)", "[idoc]
 	REQUIRE_THROWS_AS(GetFieldRaw(tiny, EDI_DC40_FIELDS, "SERIAL"), std::runtime_error);
 	REQUIRE_THROWS_AS(DetectFraming("short"), std::runtime_error);
 }
+
+TEST_CASE("ZeroPad matches SAP numeric flat widths", "[idoc][format][writer]") {
+	REQUIRE(ZeroPad(2, 6) == "000002");
+	REQUIRE(ZeroPad(8, 16) == "0000000000000008");
+	REQUIRE(ZeroPad(0, 2) == "00");
+	REQUIRE(ZeroPad(1, 2) == "01");
+}
+
+TEST_CASE("EncodeSdata reproduces E1BPSBONEW SDATA from typed values", "[idoc][format][writer]") {
+	// dictionary offsets/lengths for E1BPSBONEW
+	std::vector<int64_t> off = {0, 3, 7, 15, 23, 24, 32, 40, 65, 80};
+	std::vector<int64_t> len = {3, 4, 8, 8, 1, 8, 8, 25, 15, 8};
+	std::vector<std::string> val = {"LH", "0400", "20260715", "00000042", "Y", "", "", "MUELLER", "Mr", "19800101"};
+	auto sdata = EncodeSdata(off, len, val);
+	REQUIRE(sdata.size() == SDATA_LEN);
+	REQUIRE(sdata.substr(0, 3) == "LH ");
+	REQUIRE(sdata.substr(7, 8) == "20260715");
+	REQUIRE(sdata.substr(40, 25) == "MUELLER                  ");
+	REQUIRE(sdata.substr(80, 8) == "19800101");
+}
+
+TEST_CASE("EncodeDataRecord reproduces the fixture's data records byte-exact", "[idoc][format][writer]") {
+	auto records = SplitRecords(ReadFile(FixturePath()), Framing::FIXED);
+	for (int i = 1; i <= 2; i++) {
+		const auto &orig = records[i];
+		auto segnam = GetFieldRaw(orig, EDI_DD40_FIELDS[0]);
+		auto mandt = GetFieldRaw(orig, EDI_DD40_FIELDS[1]);
+		auto docnum = std::stoll(GetFieldRaw(orig, EDI_DD40_FIELDS[2]));
+		auto segnum = std::stoll(GetFieldRaw(orig, EDI_DD40_FIELDS[3]));
+		auto psgnum = std::stoll(GetFieldRaw(orig, EDI_DD40_FIELDS[4]));
+		auto hlevel = std::stoll(GetFieldRaw(orig, EDI_DD40_FIELDS[5]));
+		auto sdata = GetFieldRaw(orig, EDI_DD40_FIELDS[6]);
+		auto rebuilt = EncodeDataRecord(segnam, mandt, docnum, segnum, psgnum, hlevel, sdata);
+		REQUIRE(rebuilt == orig);
+	}
+}
+
+TEST_CASE("EncodeControl reproduces the fixture's control record byte-exact", "[idoc][format][writer]") {
+	auto records = SplitRecords(ReadFile(FixturePath()), Framing::FIXED);
+	const auto &orig = records[0];
+	std::vector<std::string> values;
+	for (const auto &f : EDI_DC40_FIELDS) {
+		values.push_back(GetFieldRaw(orig, f)); // exact raw slices, no trimming
+	}
+	REQUIRE(EncodeControl(values) == orig);
+}

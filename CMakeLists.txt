@@ -20,6 +20,7 @@ set(EXTENSION_SOURCES
     src/idoc/idoc_format.cpp
     src/idoc_reader.cpp
     src/idoc_typed_reader.cpp
+    src/idoc_encoder.cpp
     src/idoc_copy.cpp
 )
 

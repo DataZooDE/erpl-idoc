@@ -21,4 +21,9 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader);
 // Consumes a single BLOB/VARCHAR column of raw records and frames them to a file.
 void RegisterIdocCopyFunction(ExtensionLoader &loader);
 
+// Typed-write encoders (pure, dict-free — the SQL layer supplies offsets/lengths
+// from the dictionary): idoc_encode_sdata / idoc_encode_data_record /
+// idoc_encode_control compose raw record bytes that feed COPY (FORMAT idoc).
+void RegisterIdocEncoderFunctions(ExtensionLoader &loader);
+
 } // namespace duckdb

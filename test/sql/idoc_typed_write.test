@@ -1,0 +1,86 @@
+# name: test/sql/idoc_typed_write.test
+# description: typed writer composes a byte-valid IDoc (recompute derived fields) (M4a)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+statement ok
+CREATE TEMP TABLE dict AS SELECT * FROM read_csv('test/fixtures/flight_dict.csv');
+
+# 1) segment input (typed): order + HLEVEL only. SEGNUM/PSGNUM are recomputed.
+statement ok
+CREATE TEMP TABLE idoc_seg_input AS
+  SELECT * FROM (VALUES (1,'E1SBO_CRE',1),(2,'E1BPSBONEW',2)) t(ord,segnam,hlevel);
+
+# 2) typed field values
+statement ok
+CREATE TEMP TABLE idoc_field_values AS SELECT * FROM (VALUES
+  ('E1BPSBONEW','AIRLINEID','LH'),
+  ('E1BPSBONEW','CONNECTID','0400'),
+  ('E1BPSBONEW','FLIGHTDATE','20260715'),
+  ('E1BPSBONEW','CUSTOMERID','00000042'),
+  ('E1BPSBONEW','CLASS','Y'),
+  ('E1BPSBONEW','PASSNAME','MUELLER'),
+  ('E1BPSBONEW','PASSFORM','Mr'),
+  ('E1BPSBONEW','PASSBIRTH','19800101')
+) t(segnam,field_name,value);
+
+# 3) recompute derived fields (from sql/write_idoc_typed.sql)
+statement ok
+CREATE OR REPLACE TEMP TABLE idoc_seg_num AS
+  SELECT ord,segnam,hlevel,row_number() OVER (ORDER BY ord) AS segnum FROM idoc_seg_input;
+
+statement ok
+CREATE OR REPLACE TEMP TABLE idoc_seg_hier AS
+  SELECT s.ord, s.segnam, s.hlevel, s.segnum,
+         COALESCE(MAX(p.segnum), 0) AS psgnum
+  FROM idoc_seg_num s
+  LEFT JOIN idoc_seg_num p ON p.hlevel = s.hlevel - 1 AND p.segnum < s.segnum
+  GROUP BY s.ord, s.segnam, s.hlevel, s.segnum;
+
+statement ok
+CREATE OR REPLACE TEMP TABLE idoc_sdata AS
+  SELECT h.ord,h.segnam,
+         COALESCE(idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos),
+                                    list(d.length ORDER BY d.field_pos),
+                                    list(COALESCE(v.value,'') ORDER BY d.field_pos)),
+                  repeat(' ',1000)) AS sdata
+  FROM idoc_seg_hier h
+  LEFT JOIN dict d ON d.segnam=h.segnam
+  LEFT JOIN idoc_field_values v ON v.segnam=h.segnam AND v.field_name=d.field_name
+  GROUP BY h.ord,h.segnam;
+
+# recomputed hierarchy is correct (parent link + numbering)
+query III
+SELECT segnam, segnum, psgnum FROM idoc_seg_hier ORDER BY ord;
+----
+E1SBO_CRE	1	0
+E1BPSBONEW	2	1
+
+# 4/5/6) encode + write; control envelope reconstructed from its 36 typed fields
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, idoc_encode_control([tabnam,mandt,docnum,docrel,status,direct,outmod,exprss,test,
+      idoctyp,cimtyp,mestyp,mescod,mesfct,std,stdvrs,stdmes,sndpor,sndprt,sndpfc,sndprn,sndsad,sndlad,
+      rcvpor,rcvprt,rcvpfc,rcvprn,rcvsad,rcvlad,credat,cretim,refint,refgrp,refmes,arckey,serial]) AS raw
+    FROM read_idoc_control('test/fixtures/flight.idoc')
+    UNION ALL
+    SELECT h.ord, idoc_encode_data_record(h.segnam,'001',8,h.segnum,h.psgnum,h.hlevel,sd.sdata)
+    FROM idoc_seg_hier h JOIN idoc_sdata sd USING(ord,segnam)
+  ) ORDER BY ord
+) TO '__TEST_DIR__/typed_out.idoc' (FORMAT idoc);
+
+# typed compose reproduces the fixture byte-for-byte
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/typed_out.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
+
+# and it typed-re-reads to the same values
+query III
+SELECT airlineid, flightdate, passname
+FROM read_idoc_segment('__TEST_DIR__/typed_out.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
+----
+LH	20260715	MUELLER

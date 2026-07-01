@@ -100,4 +100,24 @@ std::string RTrim(const std::string &s);
 const char *FramingName(Framing framing);
 Framing FramingFromString(const std::string &s); // "fixed" | "lf" | "crlf" (case-insensitive)
 
+// ---- Writer composition (typed mode, FR-W2) --------------------------------
+// Left zero-pad a non-negative integer to `width` (SAP numeric flat convention,
+// e.g. DOCNUM(16), SEGNUM(6), HLEVEL(2)); truncates the low digits if too wide.
+std::string ZeroPad(int64_t value, size_t width);
+
+// Compose a 1000-byte SDATA from field slices. offsets/lengths/values are parallel
+// arrays; each value is placed (space-padded/truncated) at its offset. Throws if a
+// field would exceed SDATA bounds.
+std::string EncodeSdata(const std::vector<int64_t> &offsets, const std::vector<int64_t> &lengths,
+                        const std::vector<std::string> &values);
+
+// Compose a 1063-byte EDI_DD40 data record. Numeric header fields are zero-padded to
+// SAP widths; segnam/mandt/sdata are placed as-is (space-padded).
+std::string EncodeDataRecord(const std::string &segnam, const std::string &mandt, int64_t docnum, int64_t segnum,
+                             int64_t psgnum, int64_t hlevel, const std::string &sdata);
+
+// Compose a 524-byte EDI_DC40 control record from up to 36 field values (in the
+// EDI_DC40_FIELDS order); missing/short values are space-padded.
+std::string EncodeControl(const std::vector<std::string> &values);
+
 } // namespace erpl_idoc
