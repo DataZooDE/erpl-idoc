@@ -97,6 +97,14 @@ std::vector<std::string> SplitRecords(const std::string &data, Framing framing) 
 		if (framing == Framing::TERMINATED_CRLF && !line.empty() && line.back() == '\r') {
 			line.pop_back();
 		}
+		// Validate record geometry so malformed terminated records fail early with a
+		// clear error rather than surfacing as bad rows downstream.
+		size_t expected = IsControlRecord(line) ? CONTROL_RECORD_LEN : DATA_RECORD_LEN;
+		if (line.size() != expected) {
+			throw std::runtime_error("malformed terminated IDoc record #" + std::to_string(out.size()) +
+			                         ": got " + std::to_string(line.size()) + " bytes, expected " +
+			                         std::to_string(expected));
+		}
 		out.push_back(std::move(line));
 		pos = nl + 1;
 	}
@@ -116,7 +124,8 @@ std::string JoinRecords(const std::vector<std::string> &records, Framing framing
 }
 
 std::string GetFieldRaw(const std::string &record, const FieldSpec &spec) {
-	if (spec.offset + spec.length > record.size()) {
+	// Overflow-safe: never form offset+length (which can wrap for adversarial specs).
+	if (spec.offset > record.size() || spec.length > record.size() - spec.offset) {
 		throw std::runtime_error(std::string("field '") + spec.name + "' at offset " +
 		                         std::to_string(spec.offset) + " length " + std::to_string(spec.length) +
 		                         " exceeds record size " + std::to_string(record.size()));
@@ -135,6 +144,10 @@ std::string GetFieldRaw(const std::string &record, const std::array<FieldSpec, E
 }
 
 void SetFieldRaw(std::string &record, const FieldSpec &spec, const std::string &value) {
+	// Guard against overflow when growing the record to the field's end.
+	if (spec.length > record.max_size() - spec.offset) {
+		throw std::runtime_error(std::string("field '") + spec.name + "' offset/length too large");
+	}
 	if (record.size() < spec.offset + spec.length) {
 		record.resize(spec.offset + spec.length, ' ');
 	}
@@ -256,8 +269,9 @@ std::string EncodeSdata(const std::vector<int64_t> &offsets, const std::vector<i
 	}
 	std::string sdata(SDATA_LEN, ' ');
 	for (size_t i = 0; i < offsets.size(); i++) {
-		if (offsets[i] < 0 || lengths[i] < 0 ||
-		    static_cast<size_t>(offsets[i] + lengths[i]) > SDATA_LEN) {
+		// Overflow-safe bounds test (never form offset+length on int64 inputs).
+		if (offsets[i] < 0 || lengths[i] < 0 || offsets[i] > static_cast<int64_t>(SDATA_LEN) ||
+		    lengths[i] > static_cast<int64_t>(SDATA_LEN) - offsets[i]) {
 			throw std::runtime_error("EncodeSdata: field at offset " + std::to_string(offsets[i]) +
 			                         " length " + std::to_string(lengths[i]) + " exceeds SDATA bounds");
 		}

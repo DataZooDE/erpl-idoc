@@ -22,6 +22,7 @@ using erpl_idoc::Framing;
 
 struct IdocWriteBindData : public TableFunctionData {
 	Framing framing = Framing::FIXED;
+	bool validate = true; // reject records that are not 524 (control) or 1063 (data) bytes
 };
 
 struct IdocWriteGlobalState : public GlobalFunctionData {
@@ -50,6 +51,8 @@ static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFuncti
 	for (auto &opt : input.info.options) {
 		if (StringUtil::CIEquals(opt.first, "framing")) {
 			result->framing = erpl_idoc::FramingFromString(ParseSingleStringOption(opt.second, opt.first));
+		} else if (StringUtil::CIEquals(opt.first, "validate")) {
+			result->validate = opt.second.empty() || opt.second[0].IsNull() || BooleanValue::Get(opt.second[0]);
 		} else {
 			throw BinderException("COPY (FORMAT idoc): unrecognized option \"%s\"", opt.first);
 		}
@@ -103,6 +106,15 @@ static void IdocWriteSink(ExecutionContext &context, FunctionData &bind_data, Gl
 			continue;
 		}
 		auto &rec = records[idx];
+		if (bind.validate) {
+			auto n = rec.GetSize();
+			if (n != erpl_idoc::CONTROL_RECORD_LEN && n != erpl_idoc::DATA_RECORD_LEN) {
+				throw InvalidInputException(
+				    "COPY (FORMAT idoc): record is %llu bytes; expected 524 (control) or 1063 (data). "
+				    "Pass (validate false) to write non-standard records.",
+				    (unsigned long long)n);
+			}
+		}
 		WriteAll(*state.handle, qc, rec.GetData(), rec.GetSize());
 		if (term_len) {
 			WriteAll(*state.handle, qc, term, term_len);

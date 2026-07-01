@@ -30,11 +30,13 @@ static std::string ReadWholeFile(ClientContext &context, const std::string &path
 	while (read_total < size) {
 		auto n = handle->Read(reinterpret_cast<void *>(&buffer[read_total]), size - read_total);
 		if (n <= 0) {
-			break;
+			// A short read means the reported size was wrong or the file was truncated
+			// mid-stream; parsing the shortened buffer would silently mislead.
+			throw IOException("short read on '%s': got %llu of %llu bytes", path, (unsigned long long)read_total,
+			                  (unsigned long long)size);
 		}
 		read_total += static_cast<idx_t>(n);
 	}
-	buffer.resize(read_total);
 	return buffer;
 }
 
@@ -153,6 +155,7 @@ static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, Tabl
 }
 
 static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
 	auto &gstate = data_p.global_state->Cast<IdocReadGlobalState>();
 	auto &records = gstate.parsed.records;
 	idx_t out_row = 0;
@@ -163,7 +166,8 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 		}
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 		for (idx_t i = 0; i < EDI_DC40_FIELDS.size(); i++) {
-			output.SetValue(1 + i, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]))));
+			auto raw = erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]), bind.encoding);
+			output.SetValue(1 + i, out_row, Value(RTrim(raw)));
 		}
 		out_row++;
 	}

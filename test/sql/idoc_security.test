@@ -1,0 +1,54 @@
+# name: test/sql/idoc_security.test
+# description: hardening from the Codex review — dict-source injection guard, writer
+#              geometry validation, lenient typed read
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- dictionary source is not an injection vector --------------------------------
+# a bare string that is neither a file path, a valid identifier, nor a relation
+# expression is rejected (would otherwise be spliced into the internal FROM clause)
+statement error
+SELECT * FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','foo; DROP TABLE bar');
+----
+not a file path
+
+statement error
+SELECT * FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','x WHERE 1=1');
+----
+not a file path
+
+# legitimate sources still work: file path (quoted literal) and identifier (view)
+statement ok
+CREATE VIEW dictv AS SELECT * FROM read_csv('test/fixtures/flight_dict.csv');
+
+query I
+SELECT airlineid FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','dictv');
+----
+LH
+
+# --- COPY writer rejects malformed record geometry by default -------------------
+statement error
+COPY (SELECT 'tooshort'::BLOB) TO '__TEST_DIR__/bad.idoc' (FORMAT idoc);
+----
+expected 524
+
+# ... but an explicit escape hatch allows non-standard records
+statement ok
+COPY (SELECT 'tooshort'::BLOB) TO '__TEST_DIR__/raw.idoc' (FORMAT idoc, validate false);
+
+query I
+SELECT octet_length((SELECT content FROM read_blob('__TEST_DIR__/raw.idoc')));
+----
+8
+
+# --- lenient typed read salvages from a truncated file --------------------------
+statement error
+SELECT count(*) FROM read_idoc_segment('test/fixtures/truncated.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
+----
+framing
+
+query I
+SELECT count(*) FROM read_idoc_segment('test/fixtures/truncated.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', lenient=true);
+----
+0

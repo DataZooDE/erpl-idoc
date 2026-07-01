@@ -218,6 +218,27 @@ TEST_CASE("DecodeText converts latin-1 high bytes to UTF-8 (FR-R6)", "[idoc][for
 	REQUIRE(DecodeText(latin1, "utf-8") == latin1); // pass-through
 }
 
+TEST_CASE("terminated framing rejects malformed record geometry", "[idoc][format][framing][safety]") {
+	auto records = SplitRecords(ReadFile(FixturePath()), Framing::FIXED);
+	// corrupt the second record's length, then LF-frame it
+	auto bad = records;
+	bad[1] = bad[1].substr(0, 500); // 500 != 1063
+	auto joined = JoinRecords(bad, Framing::TERMINATED_LF);
+	REQUIRE_THROWS_AS(SplitRecords(joined, Framing::TERMINATED_LF), std::runtime_error);
+}
+
+TEST_CASE("GetFieldRaw is overflow-safe for extreme specs", "[idoc][format][safety]") {
+	std::string rec(100, ' ');
+	FieldSpec huge{"X", SIZE_MAX - 10, 100}; // offset+length would wrap
+	REQUIRE_THROWS_AS(GetFieldRaw(rec, huge), std::runtime_error);
+}
+
+TEST_CASE("EncodeSdata rejects out-of-bounds fields without overflow", "[idoc][format][safety]") {
+	REQUIRE_THROWS_AS(EncodeSdata({0}, {2000}, {"x"}), std::runtime_error);            // length > SDATA
+	REQUIRE_THROWS_AS(EncodeSdata({INT64_MAX}, {1}, {"x"}), std::runtime_error);       // offset overflow
+	REQUIRE_THROWS_AS(EncodeSdata({900}, {200}, {"x"}), std::runtime_error);           // 900+200 > 1000
+}
+
 TEST_CASE("parsing never crashes on garbled / truncated input (NFR-7 fuzz)", "[idoc][format][safety]") {
 	// Deterministic pseudo-random blobs of varying lengths; lenient parse must not throw.
 	uint64_t seed = 0x9E3779B97F4A7C15ull;
