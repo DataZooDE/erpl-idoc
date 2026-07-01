@@ -1,0 +1,59 @@
+# name: test/sql/idoc_dict_helpers.test
+# description: offline dictionary authoring helpers (offset-from-lengths + validator)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- offset-from-lengths reproduces the real offsets of the flight dictionary ----
+# (the committed dict has contiguous fields, so cumulative length == stored offset)
+query I
+SELECT bool_and(recomputed = "offset") FROM (
+    SELECT "offset",
+           COALESCE(SUM(length) OVER (PARTITION BY segnam ORDER BY field_pos
+                                      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS recomputed
+    FROM read_csv('test/fixtures/flight_dict.csv')
+);
+----
+true
+
+# --- validator flags structural problems ---------------------------------------
+statement ok
+CREATE TABLE baddict AS SELECT * FROM (VALUES
+    ('S1', 1, 'A',   0, 10, 'CHAR'),
+    ('S1', 2, 'B',   5, 10, 'CHAR'),   -- overlaps A (starts at 5, before A ends at 10)
+    ('S1', 3, 'C', 995, 20, 'CHAR')    -- 995+20 exceeds SDATA(1000)
+) t(segnam, field_pos, field_name, "offset", length, datatype);
+
+query IT
+SELECT field_name, problem FROM (
+    WITH d AS (SELECT * FROM baddict),
+         ordered AS (
+           SELECT *, LAG(CAST("offset" AS BIGINT) + CAST(length AS BIGINT))
+                       OVER (PARTITION BY segnam ORDER BY field_pos) AS prev_end
+           FROM d
+         )
+    SELECT field_name, 'field exceeds SDATA(1000)' AS problem
+    FROM d WHERE CAST("offset" AS BIGINT) + CAST(length AS BIGINT) > 1000
+    UNION ALL
+    SELECT field_name, 'overlaps the previous field'
+    FROM ordered WHERE prev_end IS NOT NULL AND CAST("offset" AS BIGINT) < prev_end
+) ORDER BY field_name;
+----
+B	overlaps the previous field
+C	field exceeds SDATA(1000)
+
+# a good dictionary yields no problems
+query I
+SELECT count(*) FROM (
+    WITH d AS (SELECT * FROM read_csv('test/fixtures/flight_dict.csv')),
+         ordered AS (
+           SELECT *, LAG(CAST("offset" AS BIGINT) + CAST(length AS BIGINT))
+                       OVER (PARTITION BY segnam ORDER BY field_pos) AS prev_end
+           FROM d
+         )
+    SELECT 1 FROM d WHERE CAST("offset" AS BIGINT) < 0 OR CAST(length AS BIGINT) <= 0
+    UNION ALL SELECT 1 FROM d WHERE CAST("offset" AS BIGINT) + CAST(length AS BIGINT) > 1000
+    UNION ALL SELECT 1 FROM ordered WHERE prev_end IS NOT NULL AND CAST("offset" AS BIGINT) < prev_end
+);
+----
+0

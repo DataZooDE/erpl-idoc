@@ -71,6 +71,20 @@ parser:
   ```
   Persist it once (`COPY … TO 'flight_dict.parquet'`) to seed repeatable offline runs.
 
+### Creating dictionary files
+
+- **Export helper** (online → file): [`scripts/export_idoc_dict.sh`](scripts/export_idoc_dict.sh)
+  ```sh
+  scripts/export_idoc_dict.sh FLIGHTBOOKING_CREATEFROMDAT01 --format parquet --out flight.dict.parquet
+  scripts/export_idoc_dict.sh --batch types.txt --format parquet --out-dir dicts/   # many types
+  ```
+- **Hand-authoring** (offline, no SAP): [`sql/dict_helpers.sql`](sql/dict_helpers.sql) — supply
+  only field order + width and let **offset-from-lengths** compute offsets, then run the
+  **validator** (flags out-of-bounds offsets, overlaps, non-positive lengths, duplicate
+  positions). Minimal columns the reader needs: `segnam, field_pos, field_name, offset, length, datatype`.
+- **From DDIC**: `sap_read_table('EDISDEF')` + `sap_read_table('EDSAPPL')` when
+  `IDOCTYPE_READ_COMPLETE` is restricted (see `sql/dict_helpers.sql`).
+
 ## Typed write
 
 See [`sql/write_idoc_typed.sql`](sql/write_idoc_typed.sql): compose `SDATA` from typed
