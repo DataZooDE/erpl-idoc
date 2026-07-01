@@ -1,0 +1,60 @@
+# name: test/sql/idoc_xml.test
+# description: IDoc-XML read + flat<->XML conversion (byte-exact via the dictionary)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- generic XML read (self-describing: no dictionary needed) --------------------
+query TTT
+SELECT segnam, field_name, value
+FROM sap_idoc_read_xml('test/fixtures/flight.xml')
+WHERE field_name IN ('IDOCTYP','AIRLINEID','FLIGHTDATE','PASSNAME')
+ORDER BY field_name;
+----
+E1BPSBONEW	AIRLINEID	LH
+E1BPSBONEW	FLIGHTDATE	20260715
+EDI_DC40	IDOCTYP	FLIGHTBOOKING_CREATEFROMDAT01
+E1BPSBONEW	PASSNAME	MUELLER
+
+# hierarchy comes from XML nesting
+query TI
+SELECT DISTINCT segnam, hlevel FROM sap_idoc_read_xml('test/fixtures/flight.xml')
+WHERE segnam LIKE 'E1%' ORDER BY hlevel;
+----
+E1SBO_CRE	1
+E1BPSBONEW	2
+
+# --- XML -> flat reproduces the real fixture BYTE-EXACT (needs the dictionary) ----
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('test/fixtures/flight.xml','test/fixtures/flight_dict.csv')
+      ORDER BY record_index)
+  TO '__TEST_DIR__/from_xml.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/from_xml.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
+
+# the reconstructed flat file typed-reads to the same values
+query II
+SELECT airlineid, flightdate
+FROM sap_idoc_read_segment('__TEST_DIR__/from_xml.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
+----
+LH	20260715
+
+# --- flat -> XML -> flat is a byte-exact round trip ------------------------------
+statement ok
+COPY (SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight.idoc','test/fixtures/flight_dict.csv'))
+  TO '__TEST_DIR__/rt.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('__TEST_DIR__/rt.xml','test/fixtures/flight_dict.csv')
+      ORDER BY record_index)
+  TO '__TEST_DIR__/rt.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/rt.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true

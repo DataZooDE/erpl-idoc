@@ -23,8 +23,9 @@ sql_tests: debug
 # the bundled Catch2 — seconds, no full extension build needed).
 .PHONY: core_tests
 core_tests:
-	g++ -std=c++17 -O0 -g -Isrc/include -Iduckdb/third_party/catch \
-	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp src/idoc/idoc_format.cpp \
+	g++ -std=c++17 -O0 -g -Isrc/include -Isrc/idoc -Ithird_party/tinyxml2 -Iduckdb/third_party/catch \
+	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp test/cpp/test_idoc_xml.cpp \
+	    src/idoc/idoc_format.cpp src/idoc/idoc_xml.cpp third_party/tinyxml2/tinyxml2.cpp \
 	    -o build/core_tests
 	IDOC_FIXTURE=test/fixtures/flight.idoc build/core_tests
 

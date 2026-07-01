@@ -34,6 +34,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterIdocCopyFunction(loader);
 	RegisterIdocMacros(loader);
 	RegisterIdocDictFunctions(loader);
+	RegisterIdocXmlFunctions(loader);
 }
 
 void ErplIdocExtension::Load(ExtensionLoader &loader) {

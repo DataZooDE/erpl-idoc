@@ -36,4 +36,10 @@ void RegisterIdocMacros(ExtensionLoader &loader);
 //   sap_idoc_dict_from_fields(...)  -> normalize IDOCTYPE_READ_COMPLETE PT_FIELDS to B4 rows
 void RegisterIdocDictFunctions(ExtensionLoader &loader);
 
+// IDoc-XML functions (pure, tinyxml2, no RFC):
+//   sap_idoc_read_xml(path)             -> generic long rows from an IDoc-XML file
+//   sap_idoc_to_xml(flat_path, dict)    -> convert a flat IDoc file to IDoc-XML
+//   sap_idoc_xml_to_records(xml, dict)  -> convert IDoc-XML to flat records (for COPY)
+void RegisterIdocXmlFunctions(ExtensionLoader &loader);
+
 } // namespace duckdb
