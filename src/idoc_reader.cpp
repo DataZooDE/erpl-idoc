@@ -5,8 +5,21 @@
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
 #include "idoc_doc.hpp"
+#include "idoc_xml.hpp"
 
 namespace duckdb {
+
+// Is this file image IDoc-XML (first non-whitespace byte is '<')?
+static bool LooksLikeXml(const std::string &data) {
+	for (char c : data) {
+		if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || (unsigned char)c == 0xEF || (unsigned char)c == 0xBB ||
+		    (unsigned char)c == 0xBF) {
+			continue; // skip whitespace / UTF-8 BOM
+		}
+		return c == '<';
+	}
+	return false;
+}
 
 using erpl_idoc::EDI_DC40_FIELDS;
 using erpl_idoc::EDI_DD40_FIELDS;
@@ -41,6 +54,8 @@ static std::string ReadWholeFile(ClientContext &context, const std::string &path
 	return buffer;
 }
 
+enum class ReaderKind { DATA, CONTROL, RAW };
+
 // Bind data shared by all three readers: the file path and an optional framing override.
 struct IdocReadBindData : public TableFunctionData {
 	std::string path;
@@ -48,7 +63,27 @@ struct IdocReadBindData : public TableFunctionData {
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
 	std::string encoding = "utf-8";
+	ReaderKind kind = ReaderKind::DATA;
 };
+
+// Build a control-only ParsedIdoc from an IDoc-XML image (no dictionary needed):
+// each <IDOC>'s EDI_DC40 fields are re-encoded into a synthetic 524-byte control
+// record so the normal control scan can emit them.
+static erpl_idoc::ParsedIdoc ParseXmlControl(const std::string &xml) {
+	erpl_idoc::ParsedIdoc parsed;
+	parsed.framing = Framing::FIXED;
+	auto idocs = erpl_idoc::ParseIdocXml(xml);
+	int64_t dk = 0, idx = 0;
+	for (auto &idoc : idocs) {
+		dk++;
+		std::vector<std::string> vals;
+		for (auto &f : erpl_idoc::EDI_DC40_FIELDS) {
+			vals.push_back(erpl_idoc::XmlFieldValue(idoc.control, f.name));
+		}
+		parsed.records.push_back(erpl_idoc::IdocRecord{dk, idx++, true, erpl_idoc::EncodeControl(vals)});
+	}
+	return parsed;
+}
 
 // Global state: parse the whole file once, then stream rows out in chunks.
 struct IdocReadGlobalState : public GlobalTableFunctionState {
@@ -70,6 +105,18 @@ static unique_ptr<GlobalTableFunctionState> IdocInitGlobal(ClientContext &contex
 	auto &bind = input.bind_data->Cast<IdocReadBindData>();
 	auto data = ReadWholeFile(context, bind.path);
 	auto state = make_uniq<IdocReadGlobalState>();
+	if (LooksLikeXml(data)) {
+		// IDoc-XML: control is self-describing (no dict); data records would need the
+		// dictionary to pack SDATA, so direct the user to the XML-native functions.
+		if (bind.kind != ReaderKind::CONTROL) {
+			throw InvalidInputException(
+			    "'%s' is IDoc-XML: use sap_idoc_read_xml(...), or convert to flat with "
+			    "sap_idoc_xml_to_records(...); sap_idoc_read/_raw operate on the flat form.",
+			    bind.path);
+		}
+		state->parsed = ParseXmlControl(data);
+		return std::move(state);
+	}
 	if (bind.lenient) {
 		state->parsed = erpl_idoc::ParseImageLenient(data);
 	} else {
@@ -102,6 +149,7 @@ static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFuncti
                                              vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(input, *bind);
+	bind->kind = ReaderKind::DATA;
 
 	names = {"document_key", "docnum", "segnum", "segnam", "psgnum", "hlevel", "mandt", "sdata"};
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -141,6 +189,7 @@ static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, Tabl
                                                     vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(input, *bind);
+	bind->kind = ReaderKind::CONTROL;
 
 	names.push_back("document_key");
 	return_types.push_back(LogicalType::BIGINT);
@@ -183,6 +232,7 @@ static unique_ptr<FunctionData> ReadIdocRawBind(ClientContext &context, TableFun
                                                 vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(input, *bind);
+	bind->kind = ReaderKind::RAW;
 
 	names = {"document_key", "record_index", "record_type", "raw_record"};
 	return_types = {LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::BLOB};

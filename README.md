@@ -113,6 +113,34 @@ See [`sql/write_idoc_typed.sql`](sql/write_idoc_typed.sql): compose `SDATA` from
 values + the dictionary, **recompute derived fields** (`SEGNUM` sequential, `PSGNUM`
 = parent at `HLEVEL-1`, `HLEVEL` from input), encode records, and `COPY (… FORMAT sap_idoc)`.
 
+## IDoc-XML
+
+`erpl_idoc` also reads and writes the **self-describing IDoc-XML** serialization (fields
+are named XML elements; hierarchy is XML nesting). XML parsing uses vendored
+**tinyxml2**; still pure/offline, no RFC.
+
+| Function | Result |
+|---|---|
+| `sap_idoc_read_xml(path)` | generic long rows: `document_key, seq, segnam, hlevel, field_name, value` (control as `segnam='EDI_DC40'`). Self-describing — **no dictionary**. |
+| `sap_idoc_to_xml(flat_path, dict)` | convert a flat IDoc file → IDoc-XML text |
+| `sap_idoc_xml_to_records(xml_path, dict)` | convert IDoc-XML → flat records (recompute `SEGNUM/PSGNUM`, pack `SDATA` per the dictionary) → feed `COPY (FORMAT sap_idoc)` |
+
+`sap_idoc_read_control` is XML-aware too (dict-free). Conversion needs the dictionary
+only to map `SDATA` offsets ↔ named fields.
+
+```sql
+-- flat -> XML
+SELECT xml FROM sap_idoc_to_xml('flight.idoc', 'flight_dict.csv');
+
+-- XML -> flat (byte-exact with the dictionary), then write it
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('flight.xml','flight_dict.csv') ORDER BY record_index)
+  TO 'out.idoc' (FORMAT sap_idoc);
+```
+
+**Contracts (verified on the real A4H trial):** `xml→flat` reproduces the captured
+`flight.idoc` **byte-for-byte**, `flat→xml→flat` is byte-exact, and the XML-derived
+flat IDoc is **accepted by A4H inbound** (segments stored).
+
 ## Live-SAP composition (optional)
 
 `erpl_idoc` never calls RFC. Live exchange is documented SQL that composes `erpl_rfc`:
@@ -149,6 +177,6 @@ LOAD erpl_idoc;
 
 In scope: flat-file `EDI_DC40`/`EDI_DD40`, generic + typed read/write, control-record
 parse/emit, dictionary (online/offline), both framings, multi-IDoc, lenient/error
-handling, `latin-1`/UTF-8 SDATA decode. Not yet: IDoc-XML, `EDIDS` **status records**
-side output (FR-R7 — deferred, no fixture available), X12/EDIFACT conversion,
-business-semantic validation.
+handling, `latin-1`/UTF-8 SDATA decode, **IDoc-XML** read/write + flat↔XML conversion.
+Not yet: `EDIDS` **status records** side output (FR-R7 — deferred, no fixture available),
+X12/EDIFACT conversion, business-semantic validation.

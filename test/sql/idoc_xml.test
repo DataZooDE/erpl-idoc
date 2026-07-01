@@ -24,6 +24,18 @@ WHERE segnam LIKE 'E1%' ORDER BY hlevel;
 E1SBO_CRE	1
 E1BPSBONEW	2
 
+# sap_idoc_read_control is XML-aware (self-describing, no dictionary)
+query TTT
+SELECT tabnam, idoctyp, mestyp FROM sap_idoc_read_control('test/fixtures/flight.xml');
+----
+EDI_DC40	FLIGHTBOOKING_CREATEFROMDAT01	FLIGHTBOOKING_CREATEFROMDAT
+
+# sap_idoc_read / _raw need the flat form — clear error on XML
+statement error
+SELECT * FROM sap_idoc_read('test/fixtures/flight.xml');
+----
+is IDoc-XML
+
 # --- XML -> flat reproduces the real fixture BYTE-EXACT (needs the dictionary) ----
 statement ok
 COPY (SELECT raw_record FROM sap_idoc_xml_to_records('test/fixtures/flight.xml','test/fixtures/flight_dict.csv')
