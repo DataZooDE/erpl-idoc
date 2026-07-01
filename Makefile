@@ -27,3 +27,9 @@ core_tests:
 	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp src/idoc/idoc_format.cpp \
 	    -o build/core_tests
 	IDOC_FIXTURE=test/fixtures/flight.idoc build/core_tests
+
+# Live end-to-end tests against the real A4H trial (require erpl_rfc + a reachable
+# SAP system). Each script self-skips if its prerequisites are missing.
+.PHONY: e2e
+e2e: debug
+	@for s in test/e2e/m*.sh; do echo "== $$s =="; bash "$$s" || exit 1; done

@@ -1,0 +1,40 @@
+# name: test/sql/idoc_dictionary.test
+# description: offline segment dictionary (persisted CSV) — SPEC FR-D1 offline path
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# The dictionary is consumed as a plain relation (FR-D3). Here it comes from a CSV
+# that was persisted from a one-time online fetch (FR-D5); no SAP required.
+
+# schema / row count (4 segments, 19 fields total)
+query I
+SELECT count(*) FROM read_csv('test/fixtures/flight_dict.csv');
+----
+19
+
+# the E1BPSBONEW slicing rules drive typed access — offsets/lengths must be exact
+query III
+SELECT field_name, "offset", length
+FROM read_csv('test/fixtures/flight_dict.csv')
+WHERE segnam='E1BPSBONEW'
+ORDER BY field_pos;
+----
+AIRLINEID	0	3
+CONNECTID	3	4
+FLIGHTDATE	7	8
+CUSTOMERID	15	8
+CLASS	23	1
+COUNTER	24	8
+AGENCYNUM	32	8
+PASSNAME	40	25
+PASSFORM	65	15
+PASSBIRTH	80	8
+
+# datatypes are carried for future typing (CHAR/NUMC/DATS)
+query I
+SELECT DISTINCT datatype FROM read_csv('test/fixtures/flight_dict.csv') WHERE segnam='E1BPSBONEW' ORDER BY 1;
+----
+CHAR
+DATS
+NUMC
