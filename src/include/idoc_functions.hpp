@@ -11,6 +11,12 @@ namespace duckdb {
 //                               (the byte-exact round-trip source for COPY)
 void RegisterIdocReaderFunctions(ExtensionLoader &loader);
 
+// Typed reader: read_idoc_segment(path, segnam, dict [, framing]) -> one column per
+// dictionary field (values sliced from SDATA per offset/length). `dict` is a
+// relation source (a .csv/.parquet path, a table/view name, or a relation
+// expression); its origin (live RFC, persisted file, hand-authored) is irrelevant.
+void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader);
+
 // Writer: COPY (<relation>) TO '<path>' (FORMAT idoc [, framing 'fixed'|'lf'|'crlf'])
 // Consumes a single BLOB/VARCHAR column of raw records and frames them to a file.
 void RegisterIdocCopyFunction(ExtensionLoader &loader);

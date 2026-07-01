@@ -27,6 +27,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(idoc_version_fun);
 
 	RegisterIdocReaderFunctions(loader);
+	RegisterIdocTypedReaderFunctions(loader);
 	RegisterIdocCopyFunction(loader);
 }
 

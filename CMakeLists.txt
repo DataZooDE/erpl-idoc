@@ -19,6 +19,7 @@ set(EXTENSION_SOURCES
     src/erpl_idoc_extension.cpp
     src/idoc/idoc_format.cpp
     src/idoc_reader.cpp
+    src/idoc_typed_reader.cpp
     src/idoc_copy.cpp
 )
 

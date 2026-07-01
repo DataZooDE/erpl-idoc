@@ -1,0 +1,34 @@
+# name: test/sql/idoc_typed_read.test
+# description: typed reader read_idoc_segment driven by an offline dictionary (M3)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# typed columns for E1BPSBONEW, dictionary = committed CSV (offline, no SAP)
+query IIIII
+SELECT airlineid, connectid, flightdate, customerid, class
+FROM read_idoc_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
+----
+LH	0400	20260715	00000042	Y
+
+query III
+SELECT passname, passform, passbirth
+FROM read_idoc_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
+----
+MUELLER	Mr	19800101
+
+# dictionary works as a view too (dictionary-as-data, FR-D3)
+statement ok
+CREATE VIEW dict AS SELECT * FROM read_csv('test/fixtures/flight_dict.csv');
+
+query II
+SELECT airlineid, flightdate
+FROM read_idoc_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'dict');
+----
+LH	20260715
+
+# unknown segment -> clear bind error
+statement error
+SELECT * FROM read_idoc_segment('test/fixtures/flight.idoc', 'E1_NOPE', 'test/fixtures/flight_dict.csv');
+----
+no fields for segment
