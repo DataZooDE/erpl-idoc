@@ -43,6 +43,8 @@ struct IdocReadBindData : public TableFunctionData {
 	std::string path;
 	bool has_framing_override = false;
 	Framing framing_override = Framing::FIXED;
+	bool lenient = false;
+	std::string encoding = "utf-8";
 };
 
 // Global state: parse the whole file once, then stream rows out in chunks.
@@ -64,19 +66,28 @@ static Framing resolve_framing(const std::string &data, const IdocReadBindData &
 static unique_ptr<GlobalTableFunctionState> IdocInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<IdocReadBindData>();
 	auto data = ReadWholeFile(context, bind.path);
-	auto framing = resolve_framing(data, bind);
 	auto state = make_uniq<IdocReadGlobalState>();
-	state->parsed = erpl_idoc::ParseImage(data, framing);
+	if (bind.lenient) {
+		state->parsed = erpl_idoc::ParseImageLenient(data);
+	} else {
+		state->parsed = erpl_idoc::ParseImage(data, resolve_framing(data, bind));
+	}
 	return std::move(state);
 }
 
-// Common bind: (VARCHAR path) + named param framing.
+// Common bind: (VARCHAR path) + named params framing / lenient / encoding.
 static void ParseCommonBindArgs(TableFunctionBindInput &input, IdocReadBindData &bind) {
 	bind.path = input.inputs[0].GetValue<string>();
-	auto it = input.named_parameters.find("framing");
-	if (it != input.named_parameters.end() && !it->second.IsNull()) {
+	auto &np = input.named_parameters;
+	if (np.count("framing") && !np["framing"].IsNull()) {
 		bind.has_framing_override = true;
-		bind.framing_override = erpl_idoc::FramingFromString(it->second.GetValue<string>());
+		bind.framing_override = erpl_idoc::FramingFromString(np["framing"].GetValue<string>());
+	}
+	if (np.count("lenient") && !np["lenient"].IsNull()) {
+		bind.lenient = np["lenient"].GetValue<bool>();
+	}
+	if (np.count("encoding") && !np["encoding"].IsNull()) {
+		bind.encoding = np["encoding"].GetValue<string>();
 	}
 }
 
@@ -96,6 +107,7 @@ static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFuncti
 }
 
 static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
 	auto &gstate = data_p.global_state->Cast<IdocReadGlobalState>();
 	auto &records = gstate.parsed.records;
 	idx_t out_row = 0;
@@ -111,7 +123,8 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 		output.SetValue(4, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[4])))); // PSGNUM
 		output.SetValue(5, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[5])))); // HLEVEL
 		output.SetValue(6, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[1])))); // MANDT
-		output.SetValue(7, out_row, Value(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6])));        // SDATA (raw 1000)
+		// SDATA (raw 1000), decoded per the source codepage (default UTF-8 pass-through)
+		output.SetValue(7, out_row, Value(erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]), bind.encoding)));
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -190,21 +203,27 @@ static void ReadIdocRawScan(ClientContext &context, TableFunctionInput &data_p, 
 // Registration
 // ---------------------------------------------------------------------------
 
+static void AddReaderParams(TableFunction &f) {
+	f.named_parameters["framing"] = LogicalType::VARCHAR;  // 'fixed' | 'lf' | 'crlf'
+	f.named_parameters["lenient"] = LogicalType::BOOLEAN;  // salvage complete records
+	f.named_parameters["encoding"] = LogicalType::VARCHAR; // 'utf-8' (default) | 'latin-1'
+}
+
 void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	{
 		TableFunction f("read_idoc", {LogicalType::VARCHAR}, ReadIdocScan, ReadIdocBind, IdocInitGlobal);
-		f.named_parameters["framing"] = LogicalType::VARCHAR;
+		AddReaderParams(f);
 		loader.RegisterFunction(f);
 	}
 	{
 		TableFunction f("read_idoc_control", {LogicalType::VARCHAR}, ReadIdocControlScan, ReadIdocControlBind,
 		                IdocInitGlobal);
-		f.named_parameters["framing"] = LogicalType::VARCHAR;
+		AddReaderParams(f);
 		loader.RegisterFunction(f);
 	}
 	{
 		TableFunction f("read_idoc_raw", {LogicalType::VARCHAR}, ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal);
-		f.named_parameters["framing"] = LogicalType::VARCHAR;
+		AddReaderParams(f);
 		loader.RegisterFunction(f);
 	}
 }

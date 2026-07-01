@@ -1,0 +1,93 @@
+# name: test/sql/idoc_variants.test
+# description: M5 — framing variants, multi-IDoc, lenient/error modes
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- terminated framing: write LF, auto-detect on read, round-trip (FR-R4) -----
+statement ok
+COPY (SELECT raw_record FROM read_idoc_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+TO '__TEST_DIR__/lf.idoc' (FORMAT idoc, framing 'lf');
+
+# 2650 payload + 3 LF terminators
+query I
+SELECT octet_length((SELECT content FROM read_blob('__TEST_DIR__/lf.idoc')));
+----
+2653
+
+# auto-detected as LF, parses to the same rows
+query II
+SELECT segnam, hlevel FROM read_idoc('__TEST_DIR__/lf.idoc') ORDER BY segnum;
+----
+E1SBO_CRE	01
+E1BPSBONEW	02
+
+# LF round-trip is byte-exact
+statement ok
+COPY (SELECT raw_record FROM read_idoc_raw('__TEST_DIR__/lf.idoc') ORDER BY record_index)
+TO '__TEST_DIR__/lf2.idoc' (FORMAT idoc, framing 'lf');
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/lf.idoc'))
+     = (SELECT content FROM read_blob('__TEST_DIR__/lf2.idoc'));
+----
+true
+
+# --- CRLF framing --------------------------------------------------------------
+statement ok
+COPY (SELECT raw_record FROM read_idoc_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+TO '__TEST_DIR__/crlf.idoc' (FORMAT idoc, framing 'crlf');
+
+query I
+SELECT octet_length((SELECT content FROM read_blob('__TEST_DIR__/crlf.idoc')));
+----
+2656
+
+query I
+SELECT count(*) FROM read_idoc('__TEST_DIR__/crlf.idoc');
+----
+2
+
+# explicit framing override also works
+query I
+SELECT count(*) FROM read_idoc('__TEST_DIR__/lf.idoc', framing='lf');
+----
+2
+
+# --- multi-IDoc: two IDocs in one file, grouped by document_key (FR-R5) --------
+statement ok
+COPY (
+  SELECT raw_record FROM (
+    SELECT raw_record, record_index AS ri FROM read_idoc_raw('test/fixtures/flight.idoc')
+    UNION ALL
+    SELECT raw_record, record_index+100 FROM read_idoc_raw('test/fixtures/flight.idoc')
+  ) ORDER BY ri
+) TO '__TEST_DIR__/multi.idoc' (FORMAT idoc);
+
+query II
+SELECT document_key, count(*) FROM read_idoc('__TEST_DIR__/multi.idoc') GROUP BY 1 ORDER BY 1;
+----
+1	2
+2	2
+
+query I
+SELECT count(*) FROM read_idoc_control('__TEST_DIR__/multi.idoc');
+----
+2
+
+# --- error mode: a truncated file fails clearly in strict mode (FR-R8) ---------
+statement error
+SELECT count(*) FROM read_idoc('test/fixtures/truncated.idoc');
+----
+framing
+
+# --- lenient mode salvages the complete records ---------------------------------
+query I
+SELECT count(*) FROM read_idoc_control('test/fixtures/truncated.idoc', lenient=true);
+----
+1
+
+query I
+SELECT count(*) FROM read_idoc('test/fixtures/truncated.idoc', lenient=true);
+----
+0

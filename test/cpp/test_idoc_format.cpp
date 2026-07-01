@@ -179,3 +179,63 @@ TEST_CASE("EncodeControl reproduces the fixture's control record byte-exact", "[
 	}
 	REQUIRE(EncodeControl(values) == orig);
 }
+
+TEST_CASE("terminated framing round-trips and auto-detects (FR-R4)", "[idoc][format][framing]") {
+	auto data = ReadFile(FixturePath());
+	auto records = SplitRecords(data, Framing::FIXED);
+
+	for (auto fr : {Framing::TERMINATED_LF, Framing::TERMINATED_CRLF}) {
+		auto joined = JoinRecords(records, fr);
+		REQUIRE(DetectFraming(joined) == fr);
+		auto back = SplitRecords(joined, fr);
+		REQUIRE(back == records);
+		// re-join reproduces the terminated image byte-exact
+		REQUIRE(JoinRecords(back, fr) == joined);
+	}
+	// LF image is 3 newlines longer; CRLF is 6 bytes longer
+	REQUIRE(JoinRecords(records, Framing::TERMINATED_LF).size() == data.size() + 3);
+	REQUIRE(JoinRecords(records, Framing::TERMINATED_CRLF).size() == data.size() + 6);
+}
+
+TEST_CASE("lenient split salvages complete records from a truncated file (FR-R8)", "[idoc][format][safety]") {
+	auto data = ReadFile(FixturePath());
+	// 524 control + 300 bytes of a partial data record
+	auto truncated = data.substr(0, CONTROL_RECORD_LEN + 300);
+	REQUIRE_THROWS_AS(DetectFraming(truncated), std::runtime_error); // strict cannot frame it
+	auto salvaged = SplitRecordsLenient(truncated);
+	REQUIRE(salvaged.size() == 1); // the control record only; partial dropped
+	REQUIRE(IsControlRecord(salvaged[0]));
+
+	auto parsed = ParseImageLenient(truncated);
+	REQUIRE(parsed.records.size() == 1);
+	REQUIRE(parsed.records[0].document_key == 1);
+}
+
+TEST_CASE("DecodeText converts latin-1 high bytes to UTF-8 (FR-R6)", "[idoc][format][encoding]") {
+	std::string latin1 = "M\xFCller"; // ü = 0xFC in latin-1
+	auto utf8 = DecodeText(latin1, "latin-1");
+	REQUIRE(utf8 == "M\xC3\xBCller"); // ü = U+00FC = C3 BC in UTF-8
+	REQUIRE(DecodeText(latin1, "utf-8") == latin1); // pass-through
+}
+
+TEST_CASE("parsing never crashes on garbled / truncated input (NFR-7 fuzz)", "[idoc][format][safety]") {
+	// Deterministic pseudo-random blobs of varying lengths; lenient parse must not throw.
+	uint64_t seed = 0x9E3779B97F4A7C15ull;
+	for (int t = 0; t < 500; t++) {
+		seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+		size_t n = seed % 4000;
+		std::string blob;
+		blob.reserve(n);
+		uint64_t s = seed;
+		for (size_t i = 0; i < n; i++) {
+			s = s * 6364136223846793005ull + 1442695040888963407ull;
+			blob += static_cast<char>((s >> 33) & 0xFF);
+		}
+		// occasionally prefix with the control magic to exercise the control path
+		if (t % 3 == 0 && blob.size() >= 6) {
+			blob.replace(0, 6, "EDI_DC");
+		}
+		REQUIRE_NOTHROW(ParseImageLenient(blob));      // salvage, never throw
+		REQUIRE_NOTHROW(SplitRecordsLenient(blob));    // bounds-safe
+	}
+}

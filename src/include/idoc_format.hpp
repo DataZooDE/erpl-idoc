@@ -93,6 +93,19 @@ ParsedIdoc ParseImage(const std::string &data, Framing framing);
 // Convenience: detect framing then ParseImage.
 ParsedIdoc ParseImageAuto(const std::string &data);
 
+// Lenient FIXED split (FR-R8): walk records by type, stop at the first incomplete
+// record (drops a trailing partial) instead of throwing. Safe on truncated input.
+std::vector<std::string> SplitRecordsLenient(const std::string &data);
+
+// Lenient parse: like ParseImage(FIXED) but salvages complete records from a
+// truncated/garbled file. Never throws on short input (NFR-7).
+ParsedIdoc ParseImageLenient(const std::string &data);
+
+// Decode raw record bytes to UTF-8 for text output. encoding is case-insensitive:
+// "utf-8"/"utf8" (pass through) or "latin-1"/"iso-8859-1"/"latin1" (each byte ->
+// code point). Unknown encodings pass through unchanged.
+std::string DecodeText(const std::string &raw, const std::string &encoding);
+
 // Trailing-space trim (right trim only) — for the friendly generic/typed views.
 std::string RTrim(const std::string &s);
 

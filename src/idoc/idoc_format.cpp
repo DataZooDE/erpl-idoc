@@ -164,6 +164,60 @@ ParsedIdoc ParseImageAuto(const std::string &data) {
 	return ParseImage(data, DetectFraming(data));
 }
 
+std::vector<std::string> SplitRecordsLenient(const std::string &data) {
+	std::vector<std::string> out;
+	size_t pos = 0;
+	const size_t len = data.size();
+	while (pos < len) {
+		size_t block = (len - pos >= 6 && data.compare(pos, 6, "EDI_DC") == 0) ? CONTROL_RECORD_LEN
+		                                                                       : DATA_RECORD_LEN;
+		if (pos + block > len) {
+			break; // drop the trailing partial record
+		}
+		out.push_back(data.substr(pos, block));
+		pos += block;
+	}
+	return out;
+}
+
+ParsedIdoc ParseImageLenient(const std::string &data) {
+	ParsedIdoc result;
+	result.framing = Framing::FIXED;
+	auto records = SplitRecordsLenient(data);
+	int64_t document_key = 0;
+	int64_t idx = 0;
+	for (auto &rec : records) {
+		bool is_control = IsControlRecord(rec);
+		if (is_control) {
+			document_key++;
+		}
+		result.records.push_back(IdocRecord{document_key, idx, is_control, std::move(rec)});
+		idx++;
+	}
+	return result;
+}
+
+std::string DecodeText(const std::string &raw, const std::string &encoding) {
+	std::string lower;
+	for (char c : encoding) {
+		lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	if (lower == "latin-1" || lower == "latin1" || lower == "iso-8859-1" || lower == "iso8859-1") {
+		std::string out;
+		out.reserve(raw.size());
+		for (unsigned char c : raw) {
+			if (c < 0x80) {
+				out += static_cast<char>(c);
+			} else {
+				out += static_cast<char>(0xC0 | (c >> 6));
+				out += static_cast<char>(0x80 | (c & 0x3F));
+			}
+		}
+		return out;
+	}
+	return raw; // utf-8 / unknown: pass through
+}
+
 std::string RTrim(const std::string &s) {
 	size_t end = s.size();
 	while (end > 0 && s[end - 1] == ' ') {
