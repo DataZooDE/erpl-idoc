@@ -6,6 +6,7 @@
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
 #include "idoc_dict_source.hpp"
+#include "idoc_doc.hpp"
 
 #include <algorithm>
 #include <set>
@@ -49,7 +50,7 @@ static unique_ptr<MaterializedQueryResult> QueryDict(ClientContext &context, con
 }
 
 // ===========================================================================
-// idoc_dict_offsets(dict) — compute the 0-based SDATA offset of each field as the
+// sap_idoc_dict_offsets(dict) — compute the 0-based SDATA offset of each field as the
 // cumulative width of the preceding fields in the same segment (offline authoring:
 // supply only field order + width). Input needs segnam, field_pos, field_name,
 // length; datatype optional.
@@ -157,7 +158,7 @@ static void OffsetsScan(ClientContext &, TableFunctionInput &data_p, DataChunk &
 }
 
 // ===========================================================================
-// idoc_validate_dict(dict) — one row per structural problem; empty = sound.
+// sap_idoc_dict_validate(dict) — one row per structural problem; empty = sound.
 // ===========================================================================
 struct ProblemRow {
 	std::string segnam, field_name, problem;
@@ -222,7 +223,7 @@ static void ValidateScan(ClientContext &, TableFunctionInput &data_p, DataChunk 
 }
 
 // ===========================================================================
-// idoc_dict_from_fields(fields, idoctyp, cimtyp, release) -> LIST<STRUCT(B4)>
+// sap_idoc_dict_from_fields(fields, idoctyp, cimtyp, release) -> LIST<STRUCT(B4)>
 // Normalize an IDOCTYPE_READ_COMPLETE PT_FIELDS list into B4 dictionary rows,
 // without any RFC (it only transforms data erpl_rfc already returned).
 // ===========================================================================
@@ -293,21 +294,33 @@ static void DictFromFieldsFun(DataChunk &args, ExpressionState &state, Vector &r
 }
 
 void RegisterIdocDictFunctions(ExtensionLoader &loader) {
-	{
-		TableFunction f("idoc_dict_offsets", {LogicalType::VARCHAR}, OffsetsScan, OffsetsBind, OffsetsInit);
-		loader.RegisterFunction(f);
-	}
-	{
-		TableFunction f("idoc_validate_dict", {LogicalType::VARCHAR}, ValidateScan, ValidateBind, ValidateInit);
-		loader.RegisterFunction(f);
-	}
-	{
-		ScalarFunction f("idoc_dict_from_fields",
-		                 {LogicalType::LIST(LogicalType::ANY), LogicalType::VARCHAR, LogicalType::VARCHAR,
-		                  LogicalType::VARCHAR},
-		                 LogicalType::LIST(LogicalType::STRUCT(B4Fields())), DictFromFieldsFun);
-		loader.RegisterFunction(f);
-	}
+	RegisterDocTableFunction(
+	    loader, TableFunction("sap_idoc_dict_offsets", {LogicalType::VARCHAR}, OffsetsScan, OffsetsBind, OffsetsInit),
+	    "Compute a segment dictionary's field offsets from lengths only: the 0-based SDATA offset of each "
+	    "field is the cumulative width of the preceding fields in the same segment. Input needs "
+	    "segnam, field_pos, field_name, length (datatype optional). 'src' is a .csv/.parquet path, a "
+	    "table/view name, or a relation expression.",
+	    {"SELECT * FROM sap_idoc_dict_offsets('my_fields.csv')"}, {"src"});
+
+	RegisterDocTableFunction(
+	    loader, TableFunction("sap_idoc_dict_validate", {LogicalType::VARCHAR}, ValidateScan, ValidateBind, ValidateInit),
+	    "Validate a segment dictionary: returns one row per structural problem (offset<0/length<=0, field "
+	    "exceeds SDATA(1000), overlaps the previous field, duplicate field_pos). An empty result means the "
+	    "dictionary is structurally sound.",
+	    {"SELECT * FROM sap_idoc_dict_validate('my.dict.parquet')"}, {"src"});
+
+	RegisterDocScalarFunction(
+	    loader,
+	    ScalarFunction("sap_idoc_dict_from_fields",
+	                   {LogicalType::LIST(LogicalType::ANY), LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                    LogicalType::VARCHAR},
+	                   LogicalType::LIST(LogicalType::STRUCT(B4Fields())), DictFromFieldsFun),
+	    "Normalize an IDOCTYPE_READ_COMPLETE PT_FIELDS list into the SPEC B4 dictionary schema (the "
+	    "transform used internally by the sap_idoc_dictionary macro). Pure — it only reshapes data that "
+	    "erpl_rfc already returned; no RFC is performed here.",
+	    {"SELECT UNNEST(sap_idoc_dict_from_fields(r.PT_FIELDS,'MATMAS05','','620')) "
+	     "FROM sap_rfc_invoke('IDOCTYPE_READ_COMPLETE', sap_idoc_params('MATMAS05')) r"},
+	    {"fields", "idoctyp", "cimtyp", "release"});
 }
 
 } // namespace duckdb

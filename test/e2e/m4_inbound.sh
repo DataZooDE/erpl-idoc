@@ -35,13 +35,13 @@ CREATE TEMP TABLE idoc_field_values AS SELECT * FROM (VALUES
   ('E1BPSBONEW','PASSFORM','Mr'),('E1BPSBONEW','PASSBIRTH','19800101')) t(segnam,field_name,value);
 CREATE OR REPLACE TEMP TABLE idoc_seg_num AS SELECT ord,segnam,hlevel,row_number() OVER (ORDER BY ord) AS segnum FROM idoc_seg_input;
 CREATE OR REPLACE TEMP TABLE idoc_seg_hier AS SELECT s.ord,s.segnam,s.hlevel,s.segnum, COALESCE(MAX(p.segnum),0) AS psgnum FROM idoc_seg_num s LEFT JOIN idoc_seg_num p ON p.hlevel=s.hlevel-1 AND p.segnum<s.segnum GROUP BY s.ord,s.segnam,s.hlevel,s.segnum;
-CREATE OR REPLACE TEMP TABLE idoc_sdata AS SELECT h.ord,h.segnam, COALESCE(idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos), list(d.length ORDER BY d.field_pos), list(COALESCE(v.value,'') ORDER BY d.field_pos)), repeat(' ',1000)) AS sdata FROM idoc_seg_hier h LEFT JOIN dict d ON d.segnam=h.segnam LEFT JOIN idoc_field_values v ON v.segnam=h.segnam AND v.field_name=d.field_name GROUP BY h.ord,h.segnam;
+CREATE OR REPLACE TEMP TABLE idoc_sdata AS SELECT h.ord,h.segnam, COALESCE(sap_idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos), list(d.length ORDER BY d.field_pos), list(COALESCE(v.value,'') ORDER BY d.field_pos)), repeat(' ',1000)) AS sdata FROM idoc_seg_hier h LEFT JOIN dict d ON d.segnam=h.segnam LEFT JOIN idoc_field_values v ON v.segnam=h.segnam AND v.field_name=d.field_name GROUP BY h.ord,h.segnam;
 .output
 COPY (SELECT raw FROM (
-  SELECT 0 AS ord, idoc_encode_control([tabnam,mandt,docnum,docrel,status,direct,outmod,exprss,test,idoctyp,cimtyp,mestyp,mescod,mesfct,std,stdvrs,stdmes,sndpor,sndprt,sndpfc,sndprn,sndsad,sndlad,rcvpor,rcvprt,rcvpfc,rcvprn,rcvsad,rcvlad,credat,cretim,refint,refgrp,refmes,arckey,serial]) AS raw FROM read_idoc_control('test/fixtures/flight.idoc')
+  SELECT 0 AS ord, sap_idoc_encode_control([tabnam,mandt,docnum,docrel,status,direct,outmod,exprss,test,idoctyp,cimtyp,mestyp,mescod,mesfct,std,stdvrs,stdmes,sndpor,sndprt,sndpfc,sndprn,sndsad,sndlad,rcvpor,rcvprt,rcvpfc,rcvprn,rcvsad,rcvlad,credat,cretim,refint,refgrp,refmes,arckey,serial]) AS raw FROM sap_idoc_read_control('test/fixtures/flight.idoc')
   UNION ALL
-  SELECT h.ord, idoc_encode_data_record(h.segnam,'001',0,h.segnum,h.psgnum,h.hlevel,sd.sdata) FROM idoc_seg_hier h JOIN idoc_sdata sd USING(ord,segnam)
-) ORDER BY ord) TO '$HOST_FILE' (FORMAT idoc);
+  SELECT h.ord, sap_idoc_encode_data_record(h.segnam,'001',0,h.segnum,h.psgnum,h.hlevel,sd.sdata) FROM idoc_seg_hier h JOIN idoc_sdata sd USING(ord,segnam)
+) ORDER BY ord) TO '$HOST_FILE' (FORMAT sap_idoc);
 SQL
 [ -f "$HOST_FILE" ] && [ "$(wc -c < "$HOST_FILE")" -eq 2650 ] || { echo "FAIL: typed write did not produce a 2650-byte file"; exit 1; }
 echo "  ok: erpl_idoc wrote $(wc -c < "$HOST_FILE")-byte typed IDoc"

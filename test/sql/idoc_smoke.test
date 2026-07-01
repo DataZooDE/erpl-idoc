@@ -4,13 +4,13 @@
 
 # Before we load the extension, this fails
 statement error
-SELECT idoc_version('hello');
+SELECT sap_idoc_version('hello');
 ----
-Catalog Error: Scalar Function with name idoc_version does not exist!
+Catalog Error: Scalar Function with name sap_idoc_version does not exist!
 
 require erpl_idoc
 
 query I
-SELECT idoc_version('loaded');
+SELECT sap_idoc_version('loaded');
 ----
 erpl_idoc loaded

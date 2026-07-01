@@ -4,13 +4,13 @@
 
 require erpl_idoc
 
-# write the fixture back out via COPY (FORMAT idoc) from read_idoc_raw
+# write the fixture back out via COPY (FORMAT sap_idoc) from sap_idoc_read_raw
 statement ok
 COPY (
     SELECT raw_record
-    FROM read_idoc_raw('test/fixtures/flight.idoc')
+    FROM sap_idoc_read_raw('test/fixtures/flight.idoc')
     ORDER BY record_index
-) TO '__TEST_DIR__/roundtrip.idoc' (FORMAT idoc);
+) TO '__TEST_DIR__/roundtrip.idoc' (FORMAT sap_idoc);
 
 # the output must be byte-for-byte identical to the input fixture
 query I
@@ -21,6 +21,6 @@ true
 
 # and it must re-parse to the same records
 query I
-SELECT count(*) FROM read_idoc('__TEST_DIR__/roundtrip.idoc');
+SELECT count(*) FROM sap_idoc_read('__TEST_DIR__/roundtrip.idoc');
 ----
 2

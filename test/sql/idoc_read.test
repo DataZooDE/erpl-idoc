@@ -6,43 +6,43 @@ require erpl_idoc
 
 # --- generic long data records ------------------------------------------------
 query I
-SELECT count(*) FROM read_idoc('test/fixtures/flight.idoc');
+SELECT count(*) FROM sap_idoc_read('test/fixtures/flight.idoc');
 ----
 2
 
 query II
-SELECT segnam, hlevel FROM read_idoc('test/fixtures/flight.idoc') ORDER BY segnum;
+SELECT segnam, hlevel FROM sap_idoc_read('test/fixtures/flight.idoc') ORDER BY segnum;
 ----
 E1SBO_CRE	01
 E1BPSBONEW	02
 
 # every data record shares one document_key
 query I
-SELECT count(DISTINCT document_key) FROM read_idoc('test/fixtures/flight.idoc');
+SELECT count(DISTINCT document_key) FROM sap_idoc_read('test/fixtures/flight.idoc');
 ----
 1
 
 # raw SDATA of E1BPSBONEW is 1000 chars and starts with 'LH '
 query I
-SELECT length(sdata) FROM read_idoc('test/fixtures/flight.idoc') WHERE segnam='E1BPSBONEW';
+SELECT length(sdata) FROM sap_idoc_read('test/fixtures/flight.idoc') WHERE segnam='E1BPSBONEW';
 ----
 1000
 
 query I
-SELECT rtrim(sdata[1:3]) FROM read_idoc('test/fixtures/flight.idoc') WHERE segnam='E1BPSBONEW';
+SELECT rtrim(sdata[1:3]) FROM sap_idoc_read('test/fixtures/flight.idoc') WHERE segnam='E1BPSBONEW';
 ----
 LH
 
 # --- typed control record -----------------------------------------------------
 query III
-SELECT tabnam, idoctyp, mestyp FROM read_idoc_control('test/fixtures/flight.idoc');
+SELECT tabnam, idoctyp, mestyp FROM sap_idoc_read_control('test/fixtures/flight.idoc');
 ----
 EDI_DC40	FLIGHTBOOKING_CREATEFROMDAT01	FLIGHTBOOKING_CREATEFROMDAT
 
 # --- raw records --------------------------------------------------------------
 query III
 SELECT record_index, record_type, octet_length(raw_record)
-FROM read_idoc_raw('test/fixtures/flight.idoc') ORDER BY record_index;
+FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index;
 ----
 0	C	524
 1	D	1063

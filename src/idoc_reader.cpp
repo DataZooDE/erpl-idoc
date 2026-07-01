@@ -4,6 +4,7 @@
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
+#include "idoc_doc.hpp"
 
 namespace duckdb {
 
@@ -94,7 +95,7 @@ static void ParseCommonBindArgs(TableFunctionBindInput &input, IdocReadBindData 
 }
 
 // ---------------------------------------------------------------------------
-// read_idoc  — generic long data-record schema
+// sap_idoc_read  — generic long data-record schema
 // ---------------------------------------------------------------------------
 
 static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFunctionBindInput &input,
@@ -116,7 +117,7 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 	while (gstate.cursor < records.size() && out_row < STANDARD_VECTOR_SIZE) {
 		auto &rec = records[gstate.cursor++];
 		if (rec.is_control) {
-			continue; // read_idoc only surfaces data records
+			continue; // sap_idoc_read only surfaces data records
 		}
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 		output.SetValue(1, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[2])))); // DOCNUM
@@ -133,7 +134,7 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 }
 
 // ---------------------------------------------------------------------------
-// read_idoc_control  — typed EDI_DC40 (36 fields)
+// sap_idoc_read_control  — typed EDI_DC40 (36 fields)
 // ---------------------------------------------------------------------------
 
 static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, TableFunctionBindInput &input,
@@ -175,7 +176,7 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 }
 
 // ---------------------------------------------------------------------------
-// read_idoc_raw  — one row per physical record, exact bytes (round-trip source)
+// sap_idoc_read_raw  — one row per physical record, exact bytes (round-trip source)
 // ---------------------------------------------------------------------------
 
 static unique_ptr<FunctionData> ReadIdocRawBind(ClientContext &context, TableFunctionBindInput &input,
@@ -215,20 +216,39 @@ static void AddReaderParams(TableFunction &f) {
 
 void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	{
-		TableFunction f("read_idoc", {LogicalType::VARCHAR}, ReadIdocScan, ReadIdocBind, IdocInitGlobal);
+		TableFunction f("sap_idoc_read", {LogicalType::VARCHAR}, ReadIdocScan, ReadIdocBind, IdocInitGlobal);
 		AddReaderParams(f);
-		loader.RegisterFunction(f);
+		RegisterDocTableFunction(
+		    loader, std::move(f),
+		    "Read an SAP IDoc flat file as generic long rows: one row per data (EDI_DD40) record with "
+		    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. "
+		    "Framing (fixed/lf/crlf) is auto-detected; 'lenient' salvages truncated files and 'encoding' "
+		    "decodes non-UTF-8 SDATA.",
+		    {"SELECT * FROM sap_idoc_read('flight.idoc')",
+		     "SELECT segnam, sdata FROM sap_idoc_read('port.idoc', framing='crlf')"},
+		    {"path"});
 	}
 	{
-		TableFunction f("read_idoc_control", {LogicalType::VARCHAR}, ReadIdocControlScan, ReadIdocControlBind,
+		TableFunction f("sap_idoc_read_control", {LogicalType::VARCHAR}, ReadIdocControlScan, ReadIdocControlBind,
 		                IdocInitGlobal);
 		AddReaderParams(f);
-		loader.RegisterFunction(f);
+		RegisterDocTableFunction(
+		    loader, std::move(f),
+		    "Read the typed control record(s) of an SAP IDoc flat file — all 36 EDI_DC40 fields "
+		    "(tabnam, docnum, idoctyp, mestyp, sndprn, rcvprn, …) plus a document_key. One row per IDoc.",
+		    {"SELECT idoctyp, mestyp, sndprn FROM sap_idoc_read_control('flight.idoc')"}, {"path"});
 	}
 	{
-		TableFunction f("read_idoc_raw", {LogicalType::VARCHAR}, ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal);
+		TableFunction f("sap_idoc_read_raw", {LogicalType::VARCHAR}, ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal);
 		AddReaderParams(f);
-		loader.RegisterFunction(f);
+		RegisterDocTableFunction(
+		    loader, std::move(f),
+		    "Read every physical record of an SAP IDoc flat file with its exact bytes: document_key, "
+		    "record_index, record_type ('C' control / 'D' data) and raw_record (BLOB). This is the "
+		    "byte-exact source for the writer — COPY (…) TO … (FORMAT sap_idoc).",
+		    {"COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index) TO 'g.idoc' (FORMAT "
+		     "sap_idoc)"},
+		    {"path"});
 	}
 }
 

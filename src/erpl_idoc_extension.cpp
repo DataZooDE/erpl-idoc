@@ -2,6 +2,7 @@
 
 #include "erpl_idoc_extension.hpp"
 #include "idoc_functions.hpp"
+#include "idoc_doc.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -22,9 +23,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.SetDescription("SAP IDoc flat-file reader and writer for DuckDB — read IDoc files as tables and "
 	                      "emit byte-valid IDoc files from SQL. Offline core; live-SAP access via erpl_rfc.");
 
-	auto idoc_version_fun =
-	    ScalarFunction("idoc_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, IdocVersionScalarFun);
-	loader.RegisterFunction(idoc_version_fun);
+	RegisterDocScalarFunction(
+	    loader, ScalarFunction("sap_idoc_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, IdocVersionScalarFun),
+	    "Smoke/echo function proving erpl_idoc is loaded; returns 'erpl_idoc <arg>'.",
+	    {"SELECT sap_idoc_version('ok')"}, {"tag"});
 
 	RegisterIdocReaderFunctions(loader);
 	RegisterIdocTypedReaderFunctions(loader);

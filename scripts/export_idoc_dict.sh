@@ -6,7 +6,7 @@
 # the concrete basic type into the query and COPYs the result to CSV or Parquet.
 #
 # The dictionary matches the SPEC B4 schema and is thereafter usable fully offline
-# (no SAP, no erpl_rfc) by read_idoc_segment(...).
+# (no SAP, no erpl_rfc) by sap_idoc_read_segment(...).
 #
 # Usage:
 #   scripts/export_idoc_dict.sh IDOCTYP [--cimtyp EXT] [--version 4]

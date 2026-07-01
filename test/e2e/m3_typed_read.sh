@@ -34,7 +34,7 @@ COPY (
 ) TO '__e2e_online_dict.csv' (FORMAT csv, HEADER true);
 
 SELECT airlineid, connectid, flightdate, customerid, class, passname, passform, passbirth
-FROM read_idoc_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', '__e2e_online_dict.csv');
+FROM sap_idoc_read_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', '__e2e_online_dict.csv');
 SQL
 )
 ONLINE=$(echo "$ONLINE" | tr -d '\r')
@@ -43,7 +43,7 @@ OFFLINE=$(e2e_run_sql <<'SQL'
 .mode csv
 .header off
 SELECT airlineid, connectid, flightdate, customerid, class, passname, passform, passbirth
-FROM read_idoc_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
+FROM sap_idoc_read_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
 SQL
 )
 OFFLINE=$(echo "$OFFLINE" | tr -d '\r')

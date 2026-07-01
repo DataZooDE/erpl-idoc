@@ -41,7 +41,7 @@ CREATE OR REPLACE TEMP TABLE idoc_seg_hier AS
 statement ok
 CREATE OR REPLACE TEMP TABLE idoc_sdata AS
   SELECT h.ord,h.segnam,
-         COALESCE(idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos),
+         COALESCE(sap_idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos),
                                     list(d.length ORDER BY d.field_pos),
                                     list(COALESCE(v.value,'') ORDER BY d.field_pos)),
                   repeat(' ',1000)) AS sdata
@@ -61,15 +61,15 @@ E1BPSBONEW	2	1
 statement ok
 COPY (
   SELECT raw FROM (
-    SELECT 0 AS ord, idoc_encode_control([tabnam,mandt,docnum,docrel,status,direct,outmod,exprss,test,
+    SELECT 0 AS ord, sap_idoc_encode_control([tabnam,mandt,docnum,docrel,status,direct,outmod,exprss,test,
       idoctyp,cimtyp,mestyp,mescod,mesfct,std,stdvrs,stdmes,sndpor,sndprt,sndpfc,sndprn,sndsad,sndlad,
       rcvpor,rcvprt,rcvpfc,rcvprn,rcvsad,rcvlad,credat,cretim,refint,refgrp,refmes,arckey,serial]) AS raw
-    FROM read_idoc_control('test/fixtures/flight.idoc')
+    FROM sap_idoc_read_control('test/fixtures/flight.idoc')
     UNION ALL
-    SELECT h.ord, idoc_encode_data_record(h.segnam,'001',8,h.segnum,h.psgnum,h.hlevel,sd.sdata)
+    SELECT h.ord, sap_idoc_encode_data_record(h.segnam,'001',8,h.segnum,h.psgnum,h.hlevel,sd.sdata)
     FROM idoc_seg_hier h JOIN idoc_sdata sd USING(ord,segnam)
   ) ORDER BY ord
-) TO '__TEST_DIR__/typed_out.idoc' (FORMAT idoc);
+) TO '__TEST_DIR__/typed_out.idoc' (FORMAT sap_idoc);
 
 # typed compose reproduces the fixture byte-for-byte
 query I
@@ -81,6 +81,6 @@ true
 # and it typed-re-reads to the same values
 query III
 SELECT airlineid, flightdate, passname
-FROM read_idoc_segment('__TEST_DIR__/typed_out.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_out.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
 ----
 LH	20260715	MUELLER

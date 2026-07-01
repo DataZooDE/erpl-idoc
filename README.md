@@ -21,10 +21,10 @@ flat files as SQL tables, and emit byte-valid IDoc files from SQL. It extends th
 
 | Function | Result |
 |---|---|
-| `read_idoc(path [, framing, lenient, encoding])` | generic long: one row per **data** record — `document_key, docnum, segnum, segnam, psgnum, hlevel, mandt, sdata` |
-| `read_idoc_control(path [, …])` | typed control record — all 36 `EDI_DC40` fields |
-| `read_idoc_raw(path [, …])` | one row per **physical** record with exact bytes — `document_key, record_index, record_type ('C'/'D'), raw_record BLOB` |
-| `read_idoc_segment(path, segnam, dict [, framing, lenient, encoding])` | typed: one column per dictionary field of `segnam`, sliced from `SDATA` |
+| `sap_idoc_read(path [, framing, lenient, encoding])` | generic long: one row per **data** record — `document_key, docnum, segnum, segnam, psgnum, hlevel, mandt, sdata` |
+| `sap_idoc_read_control(path [, …])` | typed control record — all 36 `EDI_DC40` fields |
+| `sap_idoc_read_raw(path [, …])` | one row per **physical** record with exact bytes — `document_key, record_index, record_type ('C'/'D'), raw_record BLOB` |
+| `sap_idoc_read_segment(path, segnam, dict [, framing, lenient, encoding])` | typed: one column per dictionary field of `segnam`, sliced from `SDATA` |
 
 Parameters: `framing` = `'fixed'` (default, contiguous) \| `'lf'` \| `'crlf'`
 (auto-detected when omitted); `lenient` = salvage complete records from a truncated
@@ -33,22 +33,22 @@ file; `encoding` = `'utf-8'` (default) \| `'latin-1'` (SDATA text decode).
 ### Writer
 
 ```sql
-COPY (<single BLOB/VARCHAR column of raw records>) TO 'file.idoc' (FORMAT idoc [, framing 'fixed'|'lf'|'crlf']);
+COPY (<single BLOB/VARCHAR column of raw records>) TO 'file.idoc' (FORMAT sap_idoc [, framing 'fixed'|'lf'|'crlf']);
 ```
 
 The writer frames raw records into a file. Compose records with the pure encoders:
 
 | Scalar | Result |
 |---|---|
-| `idoc_encode_sdata(offsets LIST<INT>, lengths LIST<INT>, values LIST<VARCHAR>)` | a 1000-byte `SDATA` |
-| `idoc_encode_data_record(segnam, mandt, docnum, segnum, psgnum, hlevel, sdata)` | a 1063-byte `EDI_DD40` BLOB |
-| `idoc_encode_control(values LIST<VARCHAR>)` | a 524-byte `EDI_DC40` BLOB |
+| `sap_idoc_encode_sdata(offsets LIST<INT>, lengths LIST<INT>, values LIST<VARCHAR>)` | a 1000-byte `SDATA` |
+| `sap_idoc_encode_data_record(segnam, mandt, docnum, segnum, psgnum, hlevel, sdata)` | a 1063-byte `EDI_DD40` BLOB |
+| `sap_idoc_encode_control(values LIST<VARCHAR>)` | a 524-byte `EDI_DC40` BLOB |
 
 ### Round-trip contract (holds byte-for-byte)
 
 ```sql
-COPY (SELECT raw_record FROM read_idoc_raw('f.idoc') ORDER BY record_index)
-  TO 'g.idoc' (FORMAT idoc);        -- g.idoc ≡ f.idoc, byte-for-byte
+COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index)
+  TO 'g.idoc' (FORMAT sap_idoc);        -- g.idoc ≡ f.idoc, byte-for-byte
 ```
 
 ## Typed mode & the segment dictionary
@@ -61,7 +61,7 @@ parser:
 - **Offline** — a CSV/Parquet file or any table/view:
   ```sql
   SELECT airlineid, flightdate
-  FROM read_idoc_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv');
+  FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv');
   ```
 - **Online (composes `erpl_rfc`)** — the extension ships two SQL macros,
   `sap_idoc_params(idoctyp [,cimtyp,version])` and `sap_idoc_dictionary(params)`:
@@ -75,7 +75,7 @@ parser:
   COPY (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01')))
        TO 'flight.dict.parquet' (FORMAT parquet);
   ```
-  Then on a SAP-less host, `read_idoc_segment(idoc, seg, 'flight.dict.parquet')` — no `erpl_rfc`.
+  Then on a SAP-less host, `sap_idoc_read_segment(idoc, seg, 'flight.dict.parquet')` — no `erpl_rfc`.
   (`erpl_idoc` never calls RFC; the macro composes `erpl_rfc` at the SQL layer. The two-macro
   split is required because `sap_rfc_invoke` evaluates its arg at bind time — see
   [`sql/sap_idoc_dictionary.sql`](sql/sap_idoc_dictionary.sql).)
@@ -92,15 +92,15 @@ parser:
   scripts/export_idoc_dict.sh --batch types.txt --format parquet --out-dir dicts/   # many types
   ```
 - **Hand-authoring** (offline, no SAP) — extension functions:
-  - `idoc_dict_offsets(src)` — supply only `segnam, field_pos, field_name, length[, datatype]`;
+  - `sap_idoc_dict_offsets(src)` — supply only `segnam, field_pos, field_name, length[, datatype]`;
     offsets are computed from cumulative widths.
-  - `idoc_validate_dict(src)` — returns one row per structural problem (out-of-bounds
+  - `sap_idoc_dict_validate(src)` — returns one row per structural problem (out-of-bounds
     offsets, overlaps, non-positive lengths, duplicate positions); empty = sound.
   ```sql
-  COPY (SELECT * FROM idoc_dict_offsets('my_fields.csv')) TO 'my.dict.parquet' (FORMAT parquet);
-  SELECT * FROM idoc_validate_dict('my.dict.parquet');   -- should return no rows
+  COPY (SELECT * FROM sap_idoc_dict_offsets('my_fields.csv')) TO 'my.dict.parquet' (FORMAT parquet);
+  SELECT * FROM sap_idoc_dict_validate('my.dict.parquet');   -- should return no rows
   ```
-- **Normalizer** `idoc_dict_from_fields(PT_FIELDS, idoctyp, cimtyp, release)` — maps a raw
+- **Normalizer** `sap_idoc_dict_from_fields(PT_FIELDS, idoctyp, cimtyp, release)` — maps a raw
   `IDOCTYPE_READ_COMPLETE` field list to the B4 schema (what `sap_idoc_dictionary` uses
   internally; call it directly if you issue the `sap_rfc_invoke` yourself).
 - **From DDIC**: `sap_read_table('EDISDEF')` + `sap_read_table('EDSAPPL')` when
@@ -111,7 +111,7 @@ parser:
 
 See [`sql/write_idoc_typed.sql`](sql/write_idoc_typed.sql): compose `SDATA` from typed
 values + the dictionary, **recompute derived fields** (`SEGNUM` sequential, `PSGNUM`
-= parent at `HLEVEL-1`, `HLEVEL` from input), encode records, and `COPY (… FORMAT idoc)`.
+= parent at `HLEVEL-1`, `HLEVEL` from input), encode records, and `COPY (… FORMAT sap_idoc)`.
 
 ## Live-SAP composition (optional)
 

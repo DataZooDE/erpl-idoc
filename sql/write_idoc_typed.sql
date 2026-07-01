@@ -10,8 +10,8 @@
 --      online recipe (sql/sap_idoc_dictionary.sql), or a hand-authored table.
 --   4. RECOMPUTE derived fields: SEGNUM = sequential; PSGNUM = SEGNUM of the nearest
 --      preceding segment at HLEVEL-1; HLEVEL from input.
---   5. ENCODE: idoc_encode_sdata -> idoc_encode_data_record; idoc_encode_control.
---   6. WRITE: COPY (raw records, control first) TO '...' (FORMAT idoc).
+--   5. ENCODE: sap_idoc_encode_sdata -> sap_idoc_encode_data_record; sap_idoc_encode_control.
+--   6. WRITE: COPY (raw records, control first) TO '...' (FORMAT sap_idoc).
 --
 -- The blocks below are parameterized by three TEMP tables the caller populates:
 --   idoc_seg_input(ord INT, segnam VARCHAR, hlevel INT)
@@ -38,7 +38,7 @@ CREATE OR REPLACE TEMP TABLE idoc_seg_hier AS
 CREATE OR REPLACE TEMP TABLE idoc_sdata AS
     SELECT h.ord, h.segnam,
            COALESCE(
-               idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos),
+               sap_idoc_encode_sdata(list(d."offset" ORDER BY d.field_pos),
                                  list(d.length   ORDER BY d.field_pos),
                                  list(COALESCE(v.value, '') ORDER BY d.field_pos)),
                repeat(' ', 1000)) AS sdata
@@ -51,7 +51,7 @@ CREATE OR REPLACE TEMP TABLE idoc_sdata AS
 -- (docnum is a policy input; here 0 = blank/renumber-on-import.)
 -- COPY (
 --     SELECT raw FROM (
---         SELECT 0 AS ord, idoc_encode_control(
+--         SELECT 0 AS ord, sap_idoc_encode_control(
 --             list(cv.value ORDER BY cv.field_pos)) AS raw
 --         FROM (SELECT iv.field_name, iv.value,
 --                      list_position(['TABNAM','MANDT','DOCNUM','DOCREL','STATUS','DIRECT','OUTMOD',
@@ -62,7 +62,7 @@ CREATE OR REPLACE TEMP TABLE idoc_sdata AS
 --               FROM idoc_control_values iv) cv
 --         UNION ALL
 --         SELECT h.ord,
---                idoc_encode_data_record(h.segnam, '001', <docnum>, h.segnum, h.psgnum, h.hlevel, sd.sdata)
+--                sap_idoc_encode_data_record(h.segnam, '001', <docnum>, h.segnum, h.psgnum, h.hlevel, sd.sdata)
 --         FROM idoc_seg_hier h JOIN idoc_sdata sd USING (ord, segnam)
 --     ) ORDER BY ord
--- ) TO '<path>' (FORMAT idoc);
+-- ) TO '<path>' (FORMAT sap_idoc);

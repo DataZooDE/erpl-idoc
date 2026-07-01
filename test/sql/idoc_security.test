@@ -9,12 +9,12 @@ require erpl_idoc
 # a bare string that is neither a file path, a valid identifier, nor a relation
 # expression is rejected (would otherwise be spliced into the internal FROM clause)
 statement error
-SELECT * FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','foo; DROP TABLE bar');
+SELECT * FROM sap_idoc_read_segment('test/fixtures/flight.idoc','E1BPSBONEW','foo; DROP TABLE bar');
 ----
 not a file path
 
 statement error
-SELECT * FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','x WHERE 1=1');
+SELECT * FROM sap_idoc_read_segment('test/fixtures/flight.idoc','E1BPSBONEW','x WHERE 1=1');
 ----
 not a file path
 
@@ -23,19 +23,19 @@ statement ok
 CREATE VIEW dictv AS SELECT * FROM read_csv('test/fixtures/flight_dict.csv');
 
 query I
-SELECT airlineid FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','dictv');
+SELECT airlineid FROM sap_idoc_read_segment('test/fixtures/flight.idoc','E1BPSBONEW','dictv');
 ----
 LH
 
 # --- COPY writer rejects malformed record geometry by default -------------------
 statement error
-COPY (SELECT 'tooshort'::BLOB) TO '__TEST_DIR__/bad.idoc' (FORMAT idoc);
+COPY (SELECT 'tooshort'::BLOB) TO '__TEST_DIR__/bad.idoc' (FORMAT sap_idoc);
 ----
 expected 524
 
 # ... but an explicit escape hatch allows non-standard records
 statement ok
-COPY (SELECT 'tooshort'::BLOB) TO '__TEST_DIR__/raw.idoc' (FORMAT idoc, validate false);
+COPY (SELECT 'tooshort'::BLOB) TO '__TEST_DIR__/raw.idoc' (FORMAT sap_idoc, validate false);
 
 query I
 SELECT octet_length((SELECT content FROM read_blob('__TEST_DIR__/raw.idoc')));
@@ -44,11 +44,11 @@ SELECT octet_length((SELECT content FROM read_blob('__TEST_DIR__/raw.idoc')));
 
 # --- lenient typed read salvages from a truncated file --------------------------
 statement error
-SELECT count(*) FROM read_idoc_segment('test/fixtures/truncated.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
+SELECT count(*) FROM sap_idoc_read_segment('test/fixtures/truncated.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
 ----
 framing
 
 query I
-SELECT count(*) FROM read_idoc_segment('test/fixtures/truncated.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', lenient=true);
+SELECT count(*) FROM sap_idoc_read_segment('test/fixtures/truncated.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', lenient=true);
 ----
 0

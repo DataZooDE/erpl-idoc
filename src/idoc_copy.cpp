@@ -15,9 +15,9 @@ using erpl_idoc::Framing;
 // COPY (<relation>) TO '<path>' (FORMAT idoc [, framing 'fixed'|'lf'|'crlf'])
 //
 // The relation must be a single BLOB/VARCHAR column of raw records (as produced by
-// read_idoc_raw, or composed by the typed writer). The writer frames them into a
+// sap_idoc_read_raw, or composed by the typed writer). The writer frames them into a
 // file. With FIXED framing and exact-length records this is the byte-exact inverse
-// of read_idoc_raw (SPEC B9 round-trip identity).
+// of sap_idoc_read_raw (SPEC B9 round-trip identity).
 // ---------------------------------------------------------------------------
 
 struct IdocWriteBindData : public TableFunctionData {
@@ -34,7 +34,7 @@ struct IdocWriteLocalState : public LocalFunctionData {};
 
 static string ParseSingleStringOption(const vector<Value> &values, const string &key) {
 	if (values.size() != 1 || values[0].IsNull()) {
-		throw BinderException("COPY (FORMAT idoc): option \"%s\" expects a single string value", key);
+		throw BinderException("COPY (FORMAT sap_idoc): option \"%s\" expects a single string value", key);
 	}
 	return values[0].GetValue<string>();
 }
@@ -44,8 +44,8 @@ static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFuncti
 	if (sql_types.size() != 1 ||
 	    (sql_types[0].id() != LogicalTypeId::BLOB && sql_types[0].id() != LogicalTypeId::VARCHAR)) {
 		throw BinderException(
-		    "COPY (FORMAT idoc) expects a single BLOB or VARCHAR column of raw IDoc records "
-		    "(e.g. SELECT raw_record FROM read_idoc_raw(...))");
+		    "COPY (FORMAT sap_idoc) expects a single BLOB or VARCHAR column of raw IDoc records "
+		    "(e.g. SELECT raw_record FROM sap_idoc_read_raw(...))");
 	}
 	auto result = make_uniq<IdocWriteBindData>();
 	for (auto &opt : input.info.options) {
@@ -54,7 +54,7 @@ static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFuncti
 		} else if (StringUtil::CIEquals(opt.first, "validate")) {
 			result->validate = opt.second.empty() || opt.second[0].IsNull() || BooleanValue::Get(opt.second[0]);
 		} else {
-			throw BinderException("COPY (FORMAT idoc): unrecognized option \"%s\"", opt.first);
+			throw BinderException("COPY (FORMAT sap_idoc): unrecognized option \"%s\"", opt.first);
 		}
 	}
 	return std::move(result);
@@ -110,7 +110,7 @@ static void IdocWriteSink(ExecutionContext &context, FunctionData &bind_data, Gl
 			auto n = rec.GetSize();
 			if (n != erpl_idoc::CONTROL_RECORD_LEN && n != erpl_idoc::DATA_RECORD_LEN) {
 				throw InvalidInputException(
-				    "COPY (FORMAT idoc): record is %llu bytes; expected 524 (control) or 1063 (data). "
+				    "COPY (FORMAT sap_idoc): record is %llu bytes; expected 524 (control) or 1063 (data). "
 				    "Pass (validate false) to write non-standard records.",
 				    (unsigned long long)n);
 			}
@@ -133,7 +133,7 @@ static void IdocWriteFinalize(ClientContext &context, FunctionData &bind_data, G
 }
 
 void RegisterIdocCopyFunction(ExtensionLoader &loader) {
-	CopyFunction info("idoc");
+	CopyFunction info("sap_idoc");
 	info.copy_to_bind = IdocWriteBind;
 	info.copy_to_initialize_global = IdocWriteInitGlobal;
 	info.copy_to_initialize_local = IdocWriteInitLocal;

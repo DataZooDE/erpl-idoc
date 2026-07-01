@@ -5,13 +5,13 @@
 namespace duckdb {
 
 // Reader table functions:
-//   read_idoc(path)          -> generic long data-record schema (analytics view)
-//   read_idoc_control(path)  -> typed EDI_DC40 control record (36 fields)
-//   read_idoc_raw(path)      -> one row per physical record with exact bytes
+//   sap_idoc_read(path)          -> generic long data-record schema (analytics view)
+//   sap_idoc_read_control(path)  -> typed EDI_DC40 control record (36 fields)
+//   sap_idoc_read_raw(path)      -> one row per physical record with exact bytes
 //                               (the byte-exact round-trip source for COPY)
 void RegisterIdocReaderFunctions(ExtensionLoader &loader);
 
-// Typed reader: read_idoc_segment(path, segnam, dict [, framing]) -> one column per
+// Typed reader: sap_idoc_read_segment(path, segnam, dict [, framing]) -> one column per
 // dictionary field (values sliced from SDATA per offset/length). `dict` is a
 // relation source (a .csv/.parquet path, a table/view name, or a relation
 // expression); its origin (live RFC, persisted file, hand-authored) is irrelevant.
@@ -22,8 +22,8 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader);
 void RegisterIdocCopyFunction(ExtensionLoader &loader);
 
 // Typed-write encoders (pure, dict-free — the SQL layer supplies offsets/lengths
-// from the dictionary): idoc_encode_sdata / idoc_encode_data_record /
-// idoc_encode_control compose raw record bytes that feed COPY (FORMAT idoc).
+// from the dictionary): sap_idoc_encode_sdata / sap_idoc_encode_data_record /
+// sap_idoc_encode_control compose raw record bytes that feed COPY (FORMAT idoc).
 void RegisterIdocEncoderFunctions(ExtensionLoader &loader);
 
 // SQL macros that compose erpl_rfc (sap_idoc_params + sap_idoc_dictionary). Pure
@@ -31,9 +31,9 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader);
 void RegisterIdocMacros(ExtensionLoader &loader);
 
 // Dictionary helper functions (pure, no RFC):
-//   idoc_dict_offsets(dict)     -> dict rows with offset computed from cumulative length
-//   idoc_validate_dict(dict)    -> one row per structural problem (empty = sound)
-//   idoc_dict_from_fields(...)  -> normalize IDOCTYPE_READ_COMPLETE PT_FIELDS to B4 rows
+//   sap_idoc_dict_offsets(dict)     -> dict rows with offset computed from cumulative length
+//   sap_idoc_dict_validate(dict)    -> one row per structural problem (empty = sound)
+//   sap_idoc_dict_from_fields(...)  -> normalize IDOCTYPE_READ_COMPLETE PT_FIELDS to B4 rows
 void RegisterIdocDictFunctions(ExtensionLoader &loader);
 
 } // namespace duckdb

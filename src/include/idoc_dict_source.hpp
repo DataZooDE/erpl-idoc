@@ -2,7 +2,7 @@
 
 // Shared, injection-hardened handling of a "dictionary source" argument — a file
 // path (.csv/.parquet/.json), a table/view name, or an explicit relation expression.
-// Used by read_idoc_segment, idoc_dict_offsets and idoc_validate_dict so the same
+// Used by sap_idoc_read_segment, sap_idoc_dict_offsets and sap_idoc_dict_validate so the same
 // safety rules apply everywhere.
 
 #include "duckdb.hpp"

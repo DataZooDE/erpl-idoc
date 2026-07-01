@@ -7,6 +7,7 @@
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
 #include "idoc_dict_source.hpp"
+#include "idoc_doc.hpp"
 
 #include <cctype>
 
@@ -88,10 +89,10 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	Connection con(*context.db);
 	auto result = con.Query(query);
 	if (result->HasError()) {
-		throw BinderException("read_idoc_segment: failed to read dictionary: " + result->GetError());
+		throw BinderException("sap_idoc_read_segment: failed to read dictionary: " + result->GetError());
 	}
 	if (result->RowCount() == 0) {
-		throw BinderException("read_idoc_segment: dictionary has no fields for segment '%s'", bind->segnam);
+		throw BinderException("sap_idoc_read_segment: dictionary has no fields for segment '%s'", bind->segnam);
 	}
 
 	names = {"document_key", "segnum"};
@@ -105,7 +106,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		rule.datatype = dt.IsNull() ? "" : dt.ToString();
 		if (rule.offset < 0 || rule.length < 0 || rule.offset > static_cast<int64_t>(erpl_idoc::SDATA_LEN) ||
 		    rule.length > static_cast<int64_t>(erpl_idoc::SDATA_LEN) - rule.offset) {
-			throw BinderException("read_idoc_segment: field '%s' offset/length out of SDATA bounds", rule.name);
+			throw BinderException("sap_idoc_read_segment: field '%s' offset/length out of SDATA bounds", rule.name);
 		}
 		// lower-case the column name (SAP dict names are upper-case)
 		std::string lower;
@@ -161,12 +162,20 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 }
 
 void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
-	TableFunction f("read_idoc_segment", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	TableFunction f("sap_idoc_read_segment", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                ReadSegmentScan, ReadSegmentBind, ReadSegmentInitGlobal);
 	f.named_parameters["framing"] = LogicalType::VARCHAR;
 	f.named_parameters["lenient"] = LogicalType::BOOLEAN;
 	f.named_parameters["encoding"] = LogicalType::VARCHAR;
-	loader.RegisterFunction(f);
+	RegisterDocTableFunction(
+	    loader, std::move(f),
+	    "Typed read of one IDoc segment type: split each segment's SDATA into named, typed columns using a "
+	    "segment dictionary. 'dict' is the dictionary source — a .csv/.parquet path, a table/view name, or a "
+	    "relation expression (SPEC B4 columns: segnam, field_pos, field_name, offset, length, datatype). The "
+	    "dictionary's origin (live erpl_rfc, persisted file, hand-authored) is irrelevant.",
+	    {"SELECT airlineid, flightdate FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv')",
+	     "SELECT * FROM sap_idoc_read_segment('f.idoc', 'E1BPSBONEW', 'dict_view')"},
+	    {"path", "segnam", "dict"});
 }
 
 } // namespace duckdb
