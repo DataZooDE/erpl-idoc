@@ -12,13 +12,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fast, DuckDB-free unit tests for the pure IDoc format core (no SAP, no full
+  # extension build). Proves the offline core independently of the matrix build.
+  core-tests:
+    name: Format core unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Compile and run core tests
+        run: make core_tests
+
   duckdb-stable-build:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
       duckdb_version: v1.5.4
       ci_tools_version: v1.5-variegata
-      extension_name: waddle
+      extension_name: erpl_idoc
 
   code-quality-check:
     name: Code Quality Check
@@ -26,5 +38,5 @@ jobs:
     with:
       duckdb_version: v1.5.4
       ci_tools_version: v1.5-variegata
-      extension_name: waddle
+      extension_name: erpl_idoc
       format_checks: 'format;tidy'

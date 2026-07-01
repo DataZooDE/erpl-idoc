@@ -1,0 +1,38 @@
+# Community Extensions descriptor for erpl_idoc.
+# Copy this into duckdb/community-extensions as extensions/erpl_idoc/description.yml
+# when opening the distribution PR. Declares a minimum DuckDB version so the binary
+# (built against the stable C-extension API baseline) stays forward-compatible.
+extension:
+  name: erpl_idoc
+  description: Read and write SAP IDoc flat files as SQL tables and byte-valid IDoc output
+  version: 0.1.0
+  language: C++
+  build: cmake
+  license: MIT
+  excluded_platforms: "windows_amd64_mingw"
+  requires_toolchains: ""
+  maintainers:
+    - datazoo
+
+repo:
+  github: DataZooDE/erpl-idoc
+  ref: main
+
+docs:
+  hello_world: |
+    -- Read an IDoc flat file as SQL
+    SELECT segnam, hlevel, sdata FROM read_idoc('flight.idoc');
+    -- Typed access via a segment dictionary (offline CSV or a table)
+    SELECT airlineid, flightdate
+    FROM read_idoc_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv');
+    -- Byte-exact round trip through the custom COPY writer
+    COPY (SELECT raw_record FROM read_idoc_raw('flight.idoc') ORDER BY record_index)
+      TO 'out.idoc' (FORMAT idoc);
+  extended_description: |
+    erpl_idoc makes DuckDB a first-class SAP IDoc reader and writer. It parses the
+    fixed-width flat-file format (control record EDI_DC40, data records EDI_DD40),
+    supports generic (raw) and typed (dictionary-driven) modes, and emits byte-valid
+    IDoc files via COPY (FORMAT idoc). The flat-file core is pure and offline (no SAP
+    / NW RFC SDK). Typed mode consumes a segment dictionary as data — sourced either
+    offline (CSV/Parquet/table) or online from a live SAP system by composing the
+    sibling erpl_rfc extension in SQL (IDOCTYPE_READ_COMPLETE). Minimum DuckDB v1.5.4.
