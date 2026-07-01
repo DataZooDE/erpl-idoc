@@ -17,6 +17,9 @@ include_directories(src/include)
 # Live-SAP access is done by composing erpl_rfc at the SQL layer (see sql/).
 set(EXTENSION_SOURCES
     src/erpl_idoc_extension.cpp
+    src/idoc/idoc_format.cpp
+    src/idoc_reader.cpp
+    src/idoc_copy.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

@@ -1,0 +1,26 @@
+# name: test/sql/idoc_roundtrip.test
+# description: byte-exact generic round trip (SPEC NFR-1 / B9 — the CI gate)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# write the fixture back out via COPY (FORMAT idoc) from read_idoc_raw
+statement ok
+COPY (
+    SELECT raw_record
+    FROM read_idoc_raw('test/fixtures/flight.idoc')
+    ORDER BY record_index
+) TO '__TEST_DIR__/roundtrip.idoc' (FORMAT idoc);
+
+# the output must be byte-for-byte identical to the input fixture
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/roundtrip.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
+
+# and it must re-parse to the same records
+query I
+SELECT count(*) FROM read_idoc('__TEST_DIR__/roundtrip.idoc');
+----
+2

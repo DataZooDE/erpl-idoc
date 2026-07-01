@@ -73,4 +73,31 @@ std::string GetFieldRaw(const std::string &record, const std::array<FieldSpec, E
 // field length. Grows `record` to the field's end if needed.
 void SetFieldRaw(std::string &record, const FieldSpec &spec, const std::string &value);
 
+// A physical record with document grouping metadata (FR-R5: multiple IDocs per file).
+struct IdocRecord {
+	int64_t document_key;  // 1-based; increments at each control record
+	int64_t record_index;  // 0-based position in the file
+	bool is_control;       // true for EDI_DC40, false for EDI_DD40
+	std::string bytes;     // exact record bytes (524 or 1063)
+};
+
+struct ParsedIdoc {
+	Framing framing;
+	std::vector<IdocRecord> records;
+};
+
+// Split a file image and attach document_key / record_index / type to each record.
+// Data records inherit the document_key of the most recent control record.
+ParsedIdoc ParseImage(const std::string &data, Framing framing);
+
+// Convenience: detect framing then ParseImage.
+ParsedIdoc ParseImageAuto(const std::string &data);
+
+// Trailing-space trim (right trim only) — for the friendly generic/typed views.
+std::string RTrim(const std::string &s);
+
+// Human-readable framing name / parse from string (for the COPY 'framing' option).
+const char *FramingName(Framing framing);
+Framing FramingFromString(const std::string &s); // "fixed" | "lf" | "crlf" (case-insensitive)
+
 } // namespace erpl_idoc

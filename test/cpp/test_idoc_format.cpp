@@ -91,6 +91,31 @@ TEST_CASE("split -> join is the byte-exact identity (round-trip anchor)", "[idoc
 	REQUIRE(rebuilt == data);
 }
 
+TEST_CASE("ParseImage groups records under a document_key", "[idoc][format][multi]") {
+	auto parsed = ParseImageAuto(ReadFile(FixturePath()));
+	REQUIRE(parsed.framing == Framing::FIXED);
+	REQUIRE(parsed.records.size() == 3);
+	// one IDoc: control + both data records share document_key 1
+	REQUIRE(parsed.records[0].document_key == 1);
+	REQUIRE(parsed.records[0].is_control);
+	REQUIRE(parsed.records[1].document_key == 1);
+	REQUIRE(parsed.records[2].document_key == 1);
+	REQUIRE(parsed.records[2].record_index == 2);
+}
+
+TEST_CASE("ParseImage groups multiple IDocs in one file", "[idoc][format][multi]") {
+	// Two IDocs back to back: each = control(524) + one data(1063).
+	auto data = ReadFile(FixturePath());
+	auto records = SplitRecords(data, Framing::FIXED); // [ctrl, data, data]
+	std::string two = records[0] + records[1] + records[0] + records[2];
+	auto parsed = ParseImage(two, Framing::FIXED);
+	REQUIRE(parsed.records.size() == 4);
+	REQUIRE(parsed.records[0].document_key == 1);
+	REQUIRE(parsed.records[1].document_key == 1);
+	REQUIRE(parsed.records[2].document_key == 2); // second control
+	REQUIRE(parsed.records[3].document_key == 2);
+}
+
 TEST_CASE("SetFieldRaw pads and truncates within the field width", "[idoc][format]") {
 	std::string rec(CONTROL_RECORD_LEN, ' ');
 	SetFieldRaw(rec, EDI_DC40_FIELDS[0], "EDI_DC40"); // TABNAM(10)

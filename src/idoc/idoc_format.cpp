@@ -1,5 +1,6 @@
 #include "idoc_format.hpp"
 
+#include <cctype>
 #include <cstring>
 
 namespace erpl_idoc {
@@ -140,6 +141,64 @@ void SetFieldRaw(std::string &record, const FieldSpec &spec, const std::string &
 	for (size_t i = 0; i < spec.length; i++) {
 		record[spec.offset + i] = (i < value.size()) ? value[i] : ' ';
 	}
+}
+
+ParsedIdoc ParseImage(const std::string &data, Framing framing) {
+	ParsedIdoc result;
+	result.framing = framing;
+	auto records = SplitRecords(data, framing);
+	int64_t document_key = 0;
+	int64_t idx = 0;
+	for (auto &rec : records) {
+		bool is_control = IsControlRecord(rec);
+		if (is_control) {
+			document_key++;
+		}
+		result.records.push_back(IdocRecord{document_key, idx, is_control, std::move(rec)});
+		idx++;
+	}
+	return result;
+}
+
+ParsedIdoc ParseImageAuto(const std::string &data) {
+	return ParseImage(data, DetectFraming(data));
+}
+
+std::string RTrim(const std::string &s) {
+	size_t end = s.size();
+	while (end > 0 && s[end - 1] == ' ') {
+		end--;
+	}
+	return s.substr(0, end);
+}
+
+const char *FramingName(Framing framing) {
+	switch (framing) {
+	case Framing::FIXED:
+		return "fixed";
+	case Framing::TERMINATED_LF:
+		return "lf";
+	case Framing::TERMINATED_CRLF:
+		return "crlf";
+	}
+	return "fixed";
+}
+
+Framing FramingFromString(const std::string &s) {
+	std::string lower;
+	for (char c : s) {
+		lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	if (lower == "fixed" || lower == "contiguous") {
+		return Framing::FIXED;
+	}
+	if (lower == "lf" || lower == "newline" || lower == "terminated_lf") {
+		return Framing::TERMINATED_LF;
+	}
+	if (lower == "crlf" || lower == "terminated_crlf") {
+		return Framing::TERMINATED_CRLF;
+	}
+	throw std::runtime_error("unknown framing '" + s + "' (expected 'fixed', 'lf' or 'crlf')");
 }
 
 } // namespace erpl_idoc

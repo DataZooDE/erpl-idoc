@@ -1,6 +1,7 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "erpl_idoc_extension.hpp"
+#include "idoc_functions.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -24,6 +25,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto idoc_version_fun =
 	    ScalarFunction("idoc_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, IdocVersionScalarFun);
 	loader.RegisterFunction(idoc_version_fun);
+
+	RegisterIdocReaderFunctions(loader);
+	RegisterIdocCopyFunction(loader);
 }
 
 void ErplIdocExtension::Load(ExtensionLoader &loader) {
