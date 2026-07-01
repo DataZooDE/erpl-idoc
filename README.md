@@ -91,12 +91,21 @@ parser:
   scripts/export_idoc_dict.sh FLIGHTBOOKING_CREATEFROMDAT01 --format parquet --out flight.dict.parquet
   scripts/export_idoc_dict.sh --batch types.txt --format parquet --out-dir dicts/   # many types
   ```
-- **Hand-authoring** (offline, no SAP): [`sql/dict_helpers.sql`](sql/dict_helpers.sql) — supply
-  only field order + width and let **offset-from-lengths** compute offsets, then run the
-  **validator** (flags out-of-bounds offsets, overlaps, non-positive lengths, duplicate
-  positions). Minimal columns the reader needs: `segnam, field_pos, field_name, offset, length, datatype`.
+- **Hand-authoring** (offline, no SAP) — extension functions:
+  - `idoc_dict_offsets(src)` — supply only `segnam, field_pos, field_name, length[, datatype]`;
+    offsets are computed from cumulative widths.
+  - `idoc_validate_dict(src)` — returns one row per structural problem (out-of-bounds
+    offsets, overlaps, non-positive lengths, duplicate positions); empty = sound.
+  ```sql
+  COPY (SELECT * FROM idoc_dict_offsets('my_fields.csv')) TO 'my.dict.parquet' (FORMAT parquet);
+  SELECT * FROM idoc_validate_dict('my.dict.parquet');   -- should return no rows
+  ```
+- **Normalizer** `idoc_dict_from_fields(PT_FIELDS, idoctyp, cimtyp, release)` — maps a raw
+  `IDOCTYPE_READ_COMPLETE` field list to the B4 schema (what `sap_idoc_dictionary` uses
+  internally; call it directly if you issue the `sap_rfc_invoke` yourself).
 - **From DDIC**: `sap_read_table('EDISDEF')` + `sap_read_table('EDSAPPL')` when
   `IDOCTYPE_READ_COMPLETE` is restricted (see `sql/dict_helpers.sql`).
+  (`src` is a `.csv`/`.parquet` path, a table/view name, or a relation expression.)
 
 ## Typed write
 

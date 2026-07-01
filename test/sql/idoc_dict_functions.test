@@ -1,0 +1,82 @@
+# name: test/sql/idoc_dict_functions.test
+# description: dictionary helper functions — idoc_dict_offsets / idoc_validate_dict /
+#              idoc_dict_from_fields (all offline, no SAP)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- idoc_dict_offsets: compute offsets from lengths-only input ------------------
+statement ok
+CREATE TABLE fields_in AS SELECT * FROM (VALUES
+    ('E1BPSBONEW', 1, 'AIRLINEID',  3, 'CHAR'),
+    ('E1BPSBONEW', 2, 'CONNECTID',  4, 'NUMC'),
+    ('E1BPSBONEW', 3, 'FLIGHTDATE', 8, 'DATS'),
+    ('E1BPSBONEW', 4, 'CUSTOMERID', 8, 'NUMC'),
+    ('E1BPSBONEW', 5, 'CLASS',      1, 'CHAR')
+) t(segnam, field_pos, field_name, length, datatype);
+
+query IIII
+SELECT field_name, "offset", length, datatype FROM idoc_dict_offsets('fields_in') ORDER BY field_pos;
+----
+AIRLINEID	0	3	CHAR
+CONNECTID	3	4	NUMC
+FLIGHTDATE	7	8	DATS
+CUSTOMERID	15	8	NUMC
+CLASS	23	1	CHAR
+
+# the offsets it computes match the real dictionary's offsets
+query I
+SELECT bool_and(o."offset" = d."offset")
+FROM idoc_dict_offsets('test/fixtures/flight_dict.csv') o
+JOIN read_csv('test/fixtures/flight_dict.csv') d USING (segnam, field_name);
+----
+true
+
+# --- idoc_validate_dict: a sound dictionary reports no problems -----------------
+query I
+SELECT count(*) FROM idoc_validate_dict('test/fixtures/flight_dict.csv');
+----
+0
+
+# ... and a broken one reports exactly the seeded problems
+statement ok
+CREATE TABLE baddict AS SELECT * FROM (VALUES
+    ('S1', 1, 'A',   0, 10, 'CHAR'),
+    ('S1', 2, 'B',   5, 10, 'CHAR'),   -- overlaps A
+    ('S1', 3, 'C', 995, 20, 'CHAR')    -- exceeds SDATA
+) t(segnam, field_pos, field_name, "offset", length, datatype);
+
+query IT
+SELECT field_name, problem FROM idoc_validate_dict('baddict') ORDER BY field_name, problem;
+----
+B	overlaps the previous field
+C	field exceeds SDATA(1000)
+
+# --- idoc_dict_from_fields: normalize an IDOCTYPE_READ_COMPLETE PT_FIELDS list ---
+# (synthetic list mimicking the RFC output — no SAP needed)
+query IIII
+SELECT u.segnam, u.field_name, u."offset", u.length
+FROM (SELECT UNNEST(idoc_dict_from_fields(
+    [ {'SEGMENTTYP':'E1BPSBONEW','FIELDNAME':'AIRLINEID','FIELD_POS':'000001','BYTE_FIRST':'000000','EXTLEN':'000003','DATATYPE':'CHAR','ROLLNAME':'S_CARR_ID','DESCRP':'Airline'},
+      {'SEGMENTTYP':'E1BPSBONEW','FIELDNAME':'FLIGHTDATE','FIELD_POS':'000003','BYTE_FIRST':'000007','EXTLEN':'000008','DATATYPE':'DATS','ROLLNAME':'S_DATE','DESCRP':'Date'} ],
+    'FLIGHTBOOKING_CREATEFROMDAT01', '', '620')) AS u) t
+ORDER BY u.field_pos;
+----
+E1BPSBONEW	AIRLINEID	0	3
+E1BPSBONEW	FLIGHTDATE	7	8
+
+# the normalized rows are directly usable as a dictionary for a typed read
+statement ok
+CREATE VIEW ndict AS
+  SELECT d.* FROM (
+    SELECT UNNEST(idoc_dict_from_fields(
+      [ {'SEGMENTTYP':'E1BPSBONEW','FIELDNAME':'AIRLINEID','FIELD_POS':'1','BYTE_FIRST':'0','EXTLEN':'3','DATATYPE':'CHAR','ROLLNAME':'','DESCRP':''},
+        {'SEGMENTTYP':'E1BPSBONEW','FIELDNAME':'FLIGHTDATE','FIELD_POS':'3','BYTE_FIRST':'7','EXTLEN':'8','DATATYPE':'DATS','ROLLNAME':'','DESCRP':''} ],
+      'FLIGHTBOOKING_CREATEFROMDAT01','','620')) AS d
+  );
+
+query I
+SELECT airlineid || '/' || flightdate
+FROM read_idoc_segment('test/fixtures/flight.idoc','E1BPSBONEW','ndict');
+----
+LH/20260715

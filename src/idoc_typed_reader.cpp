@@ -6,6 +6,7 @@
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
+#include "idoc_dict_source.hpp"
 
 #include <cctype>
 
@@ -62,66 +63,6 @@ struct ReadSegmentGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-static std::string SqlEscape(const std::string &s) {
-	std::string out;
-	for (char c : s) {
-		if (c == '\'') {
-			out += "''";
-		} else {
-			out += c;
-		}
-	}
-	return out;
-}
-
-// A conservative identifier: letters/digits/_/./$/" only, no whitespace, quotes as a
-// pair are the caller's responsibility. Used to gate the "bare name" dict source so a
-// crafted string cannot inject arbitrary SQL into the internal dictionary query.
-static bool IsSafeIdentifier(const std::string &s) {
-	if (s.empty()) {
-		return false;
-	}
-	for (char c : s) {
-		if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.' || c == '$' || c == '"')) {
-			return false;
-		}
-	}
-	return true;
-}
-
-// Turn a dictionary "source" argument into a SQL FROM expression. File paths are
-// wrapped in the appropriate reader as *quoted literals* (injection-safe); a bare
-// table/view name must be a safe identifier; a relation expression (contains '(') is
-// treated as trusted SQL. This is what makes the dictionary "data" (FR-D3).
-static std::string DictSource(const std::string &dict) {
-	auto ends_with = [&](const char *suf) {
-		std::string s(suf);
-		return dict.size() >= s.size() && dict.compare(dict.size() - s.size(), s.size(), s) == 0;
-	};
-	if (ends_with(".csv")) {
-		return "read_csv_auto('" + SqlEscape(dict) + "')";
-	}
-	if (ends_with(".parquet")) {
-		return "read_parquet('" + SqlEscape(dict) + "')";
-	}
-	if (ends_with(".json")) {
-		return "read_json_auto('" + SqlEscape(dict) + "')";
-	}
-	if (dict.find('(') != std::string::npos) {
-		return dict; // explicit relation expression, e.g. read_csv('…') — trusted SQL
-	}
-	// A path without a known extension: treat as a CSV file (quoted literal, safe).
-	if (dict.find('/') != std::string::npos || dict.find('\\') != std::string::npos) {
-		return "read_csv_auto('" + SqlEscape(dict) + "')";
-	}
-	if (!IsSafeIdentifier(dict)) {
-		throw BinderException(
-		    "read_idoc_segment: dictionary '%s' is not a file path, a valid table/view name, or a relation expression",
-		    dict);
-	}
-	return dict; // validated table / view identifier
-}
-
 static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<ReadSegmentBindData>();
@@ -143,7 +84,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 
 	// Load the slicing rules for this segment from the dictionary relation.
 	auto query = "SELECT field_name, \"offset\", length, datatype FROM " + DictSource(dict) +
-	             " WHERE segnam = '" + SqlEscape(bind->segnam) + "' ORDER BY field_pos";
+	             " WHERE segnam = '" + DictSqlEscape(bind->segnam) + "' ORDER BY field_pos";
 	Connection con(*context.db);
 	auto result = con.Query(query);
 	if (result->HasError()) {

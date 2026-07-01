@@ -30,4 +30,10 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader);
 // SQL — no RFC in C++. Lazily bound, so they load fine without erpl_rfc present.
 void RegisterIdocMacros(ExtensionLoader &loader);
 
+// Dictionary helper functions (pure, no RFC):
+//   idoc_dict_offsets(dict)     -> dict rows with offset computed from cumulative length
+//   idoc_validate_dict(dict)    -> one row per structural problem (empty = sound)
+//   idoc_dict_from_fields(...)  -> normalize IDOCTYPE_READ_COMPLETE PT_FIELDS to B4 rows
+void RegisterIdocDictFunctions(ExtensionLoader &loader);
+
 } // namespace duckdb

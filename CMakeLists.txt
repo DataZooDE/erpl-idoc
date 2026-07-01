@@ -23,6 +23,7 @@ set(EXTENSION_SOURCES
     src/idoc_encoder.cpp
     src/idoc_copy.cpp
     src/idoc_macros.cpp
+    src/idoc_dict.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
