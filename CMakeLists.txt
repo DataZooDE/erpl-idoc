@@ -22,6 +22,7 @@ set(EXTENSION_SOURCES
     src/idoc_typed_reader.cpp
     src/idoc_encoder.cpp
     src/idoc_copy.cpp
+    src/idoc_macros.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

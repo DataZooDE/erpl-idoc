@@ -9,12 +9,17 @@
 -- came from a live system, a persisted CSV/Parquet, or a hand-authored table
 -- (SPEC FR-D1/FR-D3). erpl_idoc itself performs no RFC (FR-C2).
 --
--- NOTE ON MACROS: a DuckDB table MACRO cannot wrap this because sap_rfc_invoke
--- evaluates its arguments at BIND time (it connects to SAP to discover the result
--- schema), before macro parameters are substituted. Use this template directly,
--- substituting the two literals marked <<< ... >>> below, or wrap it from the host
--- application. To turn a one-time fetch into a reusable offline dictionary, persist
--- the result (see the COPY line) and thereafter read the file (FR-D5).
+-- SHIPPED MACROS (preferred): the extension registers `sap_idoc_params(idoctyp
+-- [,cimtyp,version])` and `sap_idoc_dictionary(params)`, so you normally do NOT
+-- need this template:
+--   SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01'));
+-- The two-macro split is required because sap_rfc_invoke evaluates its arguments at
+-- BIND time (it connects to SAP to discover the result schema), before a table
+-- macro's own parameters are substituted. sap_idoc_params() builds the parameter
+-- struct from literals at the call site (foldable to a constant); the table macro
+-- passes that struct straight through. The template below is the explicit,
+-- copy-pasteable equivalent for when you want to tweak the projection.
+-- Persist a one-time fetch to reuse it offline (FR-D5): COPY (...) TO 'x.parquet'.
 --
 -- Prerequisites (run once in the session):
 --   LOAD erpl_rfc;  LOAD erpl_idoc;

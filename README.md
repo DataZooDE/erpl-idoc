@@ -63,17 +63,30 @@ parser:
   SELECT airlineid, flightdate
   FROM read_idoc_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv');
   ```
-- **Online (composes `erpl_rfc`)** — see [`sql/sap_idoc_dictionary.sql`](sql/sap_idoc_dictionary.sql):
+- **Online (composes `erpl_rfc`)** — the extension ships two SQL macros,
+  `sap_idoc_params(idoctyp [,cimtyp,version])` and `sap_idoc_dictionary(params)`:
   ```sql
   LOAD erpl_rfc; LOAD erpl_idoc;
   CREATE SECRET a4h (TYPE sap_rfc, ASHOST '…', SYSNR '00', CLIENT '001', USER '…', PASSWD '…', LANG 'EN');
-  -- IDOCTYPE_READ_COMPLETE -> the B4 dictionary relation (substitute <<<IDOCTYP>>>).
+  SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01'));
   ```
-  Persist it once (`COPY … TO 'flight_dict.parquet'`) to seed repeatable offline runs.
+  Persist it once to seed repeatable offline runs (the **connected → detached-host** bridge):
+  ```sql
+  COPY (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01')))
+       TO 'flight.dict.parquet' (FORMAT parquet);
+  ```
+  Then on a SAP-less host, `read_idoc_segment(idoc, seg, 'flight.dict.parquet')` — no `erpl_rfc`.
+  (`erpl_idoc` never calls RFC; the macro composes `erpl_rfc` at the SQL layer. The two-macro
+  split is required because `sap_rfc_invoke` evaluates its arg at bind time — see
+  [`sql/sap_idoc_dictionary.sql`](sql/sap_idoc_dictionary.sql).)
 
 ### Creating dictionary files
 
-- **Export helper** (online → file): [`scripts/export_idoc_dict.sh`](scripts/export_idoc_dict.sh)
+- **In SQL** (online → file), using the shipped macros + native `COPY`:
+  ```sql
+  COPY (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('MATMAS05'))) TO 'matmas05.dict.parquet' (FORMAT parquet);
+  ```
+- **Export helper** (turn-key, batch): [`scripts/export_idoc_dict.sh`](scripts/export_idoc_dict.sh)
   ```sh
   scripts/export_idoc_dict.sh FLIGHTBOOKING_CREATEFROMDAT01 --format parquet --out flight.dict.parquet
   scripts/export_idoc_dict.sh --batch types.txt --format parquet --out-dir dicts/   # many types

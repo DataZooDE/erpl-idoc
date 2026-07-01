@@ -1,0 +1,36 @@
+# name: test/sql/idoc_macros.test
+# description: extension-registered dictionary macros (offline-checkable parts)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# the macros are registered by the extension (available without erpl_rfc)
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('sap_idoc_params','sap_idoc_dictionary');
+----
+2
+
+# sap_idoc_params builds the IDOCTYPE_READ_COMPLETE parameter struct (no SAP needed)
+query I
+SELECT sap_idoc_params('MATMAS05')['PI_IDOCTYP'];
+----
+MATMAS05
+
+query III
+SELECT p['PI_IDOCTYP'], p['PI_CIMTYP'], p['PI_VERSION']
+FROM (SELECT sap_idoc_params('ORDERS05', 'ZEXT', '3') AS p);
+----
+ORDERS05	ZEXT	3
+
+# defaults: cimtyp='' and version='4'
+query II
+SELECT p['PI_CIMTYP'], p['PI_VERSION'] FROM (SELECT sap_idoc_params('MATMAS05') AS p);
+----
+(empty)	4
+
+# calling the dictionary macro without erpl_rfc loaded fails on the RFC function,
+# proving the macro body composes erpl_rfc (and that erpl_idoc itself does no RFC)
+statement error
+SELECT * FROM sap_idoc_dictionary(sap_idoc_params('MATMAS05'));
+----
+sap_rfc_invoke

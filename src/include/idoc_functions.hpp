@@ -26,4 +26,8 @@ void RegisterIdocCopyFunction(ExtensionLoader &loader);
 // idoc_encode_control compose raw record bytes that feed COPY (FORMAT idoc).
 void RegisterIdocEncoderFunctions(ExtensionLoader &loader);
 
+// SQL macros that compose erpl_rfc (sap_idoc_params + sap_idoc_dictionary). Pure
+// SQL — no RFC in C++. Lazily bound, so they load fine without erpl_rfc present.
+void RegisterIdocMacros(ExtensionLoader &loader);
+
 } // namespace duckdb
