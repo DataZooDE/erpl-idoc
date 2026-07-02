@@ -7,11 +7,14 @@
 #include "duckdb.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/file_open_flags.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 
 #include "idoc_format.hpp"
 #include "idoc_xml.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <memory>
 #include <string>
 
 namespace duckdb {
@@ -115,59 +118,164 @@ inline erpl_idoc::ParsedIdoc IdocParseFile(ClientContext &context, const std::st
 	return erpl_idoc::ParseImage(data, fr);
 }
 
-// Streaming state shared by every flat reader: a resolved file list read lazily,
-// one file parsed at a time.
-struct IdocScanState : public GlobalTableFunctionState {
+// Read the rest of an open file handle into a string (used only for the whole-file
+// IDoc-XML control path, which tinyxml cannot stream).
+inline std::string IdocReadRemaining(FileHandle &handle) {
+	std::string out;
+	char tmp[8192];
+	for (;;) {
+		auto n = handle.Read(reinterpret_cast<void *>(tmp), sizeof(tmp));
+		if (n <= 0) {
+			break;
+		}
+		out.append(tmp, static_cast<size_t>(n));
+	}
+	return out;
+}
+
+// ---- Parallel, constant-memory scan state -----------------------------------
+// GLOBAL state = the immutable work queue of files (one file = one split) plus an
+// atomic cursor threads pull from. MaxThreads() reports file-granular parallelism.
+struct IdocGlobalState : public GlobalTableFunctionState {
 	vector<std::string> files;
-	idx_t file_idx = 0;
-	std::string current_file;
+	std::atomic<idx_t> next_file {0};
 	bool lenient = false;
 	bool has_framing_override = false;
 	erpl_idoc::Framing framing_override = erpl_idoc::Framing::FIXED;
 	bool allow_xml_control = false;
-	erpl_idoc::ParsedIdoc parsed;
-	bool loaded = false;
-	idx_t cursor = 0;       // record index within the current file
-	idx_t field_cursor = 0; // used by sap_idoc_read_fields (fields span chunks)
+	idx_t max_threads = 1;
 	idx_t MaxThreads() const override {
-		return 1;
+		return max_threads;
 	}
 };
 
-// Ensure a record is available at (current_file, cursor); load subsequent files as
-// needed. Returns false when every file is exhausted.
-inline bool IdocAdvance(ClientContext &context, IdocScanState &st) {
-	while (true) {
-		if (st.loaded) {
-			if (st.cursor < st.parsed.records.size()) {
-				return true;
-			}
-			st.file_idx++;
-			st.loaded = false;
+// LOCAL (per-thread) state: streams ONE file at a time in O(record) memory. Holds a
+// flat RecordStreamer, or a materialized record list for the (rare) IDoc-XML control
+// path. `pending`/`field_cursor` let a record's fields span output chunks
+// (sap_idoc_read_fields) without re-reading. Declaration order matters: `streamer`
+// captures `handle`, so it is declared AFTER `handle` and destroyed first.
+struct IdocLocalState : public LocalTableFunctionState {
+	bool active = false;
+	std::string current_file;
+	unique_ptr<FileHandle> handle;
+	unique_ptr<erpl_idoc::RecordStreamer> streamer;
+	erpl_idoc::ParsedIdoc xml_parsed;
+	idx_t xml_cursor = 0;
+	bool is_xml = false;
+	erpl_idoc::IdocRecord pending;
+	bool has_pending = false;
+	idx_t field_cursor = 0;
+};
+
+inline unique_ptr<GlobalTableFunctionState> MakeIdocGlobal(ClientContext &context, vector<std::string> files,
+                                                           bool lenient, bool has_override,
+                                                           erpl_idoc::Framing framing_override, bool allow_xml_control) {
+	auto g = make_uniq<IdocGlobalState>();
+	g->lenient = lenient;
+	g->has_framing_override = has_override;
+	g->framing_override = framing_override;
+	g->allow_xml_control = allow_xml_control;
+	idx_t nthreads = TaskScheduler::GetScheduler(context).NumberOfThreads();
+	g->max_threads = MaxValue<idx_t>(1, MinValue<idx_t>(files.empty() ? 1 : files.size(), nthreads));
+	g->files = std::move(files);
+	return std::move(g);
+}
+
+inline unique_ptr<LocalTableFunctionState> MakeIdocLocal() {
+	return make_uniq<IdocLocalState>();
+}
+
+// Claim the next file from the global queue and open a streamer over it (or, for
+// IDoc-XML control, materialize its control records). Returns false when the queue is
+// drained. Constant memory: only a bounded read buffer is held per open file.
+inline bool IdocOpenNextFile(ClientContext &context, IdocGlobalState &g, IdocLocalState &l) {
+	idx_t idx = g.next_file.fetch_add(1);
+	if (idx >= g.files.size()) {
+		return false;
+	}
+	l.current_file = g.files[idx];
+	l.is_xml = false;
+	l.xml_cursor = 0;
+	l.field_cursor = 0;
+	l.has_pending = false;
+	l.streamer.reset();
+
+	auto &fs = FileSystem::GetFileSystem(context);
+	l.handle = fs.OpenFile(l.current_file, FileFlags::FILE_FLAGS_READ);
+
+	// Peek a bounded prefix to detect IDoc-XML vs flat without reading the whole file.
+	std::string prefix;
+	prefix.resize(4096);
+	auto got = l.handle->Read(reinterpret_cast<void *>(&prefix[0]), prefix.size());
+	prefix.resize(got > 0 ? static_cast<size_t>(got) : 0);
+
+	if (IdocLooksLikeXml(prefix)) {
+		if (!g.allow_xml_control) {
+			throw InvalidInputException("'%s' is IDoc-XML: use sap_idoc_read_xml(...) or sap_idoc_xml_to_records(...); "
+			                            "this function operates on the flat form.",
+			                            l.current_file);
 		}
-		if (st.file_idx >= st.files.size()) {
+		l.xml_parsed = IdocParseXmlControl(prefix + IdocReadRemaining(*l.handle));
+		l.is_xml = true;
+		l.active = true;
+		return true;
+	}
+
+	// Flat: a ByteSource that first drains the peeked prefix, then reads from the file.
+	auto pre = std::make_shared<std::string>(std::move(prefix));
+	auto pos = std::make_shared<size_t>(0);
+	auto *handle_ptr = l.handle.get();
+	erpl_idoc::ByteSource src = [pre, pos, handle_ptr](char *dst, size_t n) -> size_t {
+		size_t left = pre->size() - *pos;
+		if (left > 0) {
+			size_t give = n < left ? n : left;
+			memcpy(dst, pre->data() + *pos, give);
+			*pos += give;
+			return give;
+		}
+		auto r = handle_ptr->Read(reinterpret_cast<void *>(dst), n);
+		return r > 0 ? static_cast<size_t>(r) : 0;
+	};
+	if (g.has_framing_override) {
+		l.streamer = make_uniq<erpl_idoc::RecordStreamer>(std::move(src), g.framing_override, g.lenient);
+	} else {
+		l.streamer = make_uniq<erpl_idoc::RecordStreamer>(erpl_idoc::RecordStreamer::Auto(std::move(src), g.lenient));
+	}
+	l.active = true;
+	return true;
+}
+
+// Ensure l.pending holds the next record, pulling from the current file's streamer and
+// advancing to the next file as needed. Returns false when all files are drained.
+inline bool IdocPeek(ClientContext &context, IdocGlobalState &g, IdocLocalState &l) {
+	if (l.has_pending) {
+		return true;
+	}
+	for (;;) {
+		if (!l.active && !IdocOpenNextFile(context, g, l)) {
 			return false;
 		}
-		st.current_file = st.files[st.file_idx];
-		st.parsed = IdocParseFile(context, st.current_file, st.lenient, st.has_framing_override, st.framing_override,
-		                          st.allow_xml_control);
-		st.cursor = 0;
-		st.field_cursor = 0;
-		st.loaded = true;
+		bool got;
+		if (l.is_xml) {
+			got = l.xml_cursor < l.xml_parsed.records.size();
+			if (got) {
+				l.pending = l.xml_parsed.records[l.xml_cursor++];
+			}
+		} else {
+			got = l.streamer->Next(l.pending);
+		}
+		if (got) {
+			l.has_pending = true;
+			l.field_cursor = 0;
+			return true;
+		}
+		l.active = false; // current file exhausted; grab the next
 	}
 }
 
-// Convenience: build the shared scan state from a resolved bind.
-inline unique_ptr<GlobalTableFunctionState> MakeIdocScanState(vector<std::string> files, bool lenient,
-                                                              bool has_override, erpl_idoc::Framing framing_override,
-                                                              bool allow_xml_control) {
-	auto st = make_uniq<IdocScanState>();
-	st->files = std::move(files);
-	st->lenient = lenient;
-	st->has_framing_override = has_override;
-	st->framing_override = framing_override;
-	st->allow_xml_control = allow_xml_control;
-	return std::move(st);
+inline void IdocConsume(IdocLocalState &l) {
+	l.has_pending = false;
+	l.field_cursor = 0;
 }
 
 } // namespace duckdb

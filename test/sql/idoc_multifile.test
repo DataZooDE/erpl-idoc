@@ -82,3 +82,34 @@ query I
 SELECT count(*) FROM sap_idoc_read('test/fixtures/flight.idoc');
 ----
 2
+
+# --- parallelism: results are identical (order-insensitive) across thread counts ---
+statement ok
+SET threads=8;
+
+query I
+SELECT count(*) FROM sap_idoc_read('__TEST_DIR__/mf_*.idoc');
+----
+4
+
+# (filename, document_key) uniquely identifies each IDoc across the parallel files
+query I
+SELECT count(DISTINCT (filename || ':' || document_key))
+FROM sap_idoc_read('__TEST_DIR__/mf_*.idoc', filename=true);
+----
+2
+
+# typed decode is stable under parallelism too
+query I
+SELECT count(*) FROM sap_idoc_read_fields('__TEST_DIR__/mf_*.idoc', 'test/fixtures/flight_dict.csv')
+WHERE field_name='AIRLINEID' AND value='LH';
+----
+2
+
+statement ok
+SET threads=1;
+
+query I
+SELECT count(*) FROM sap_idoc_read('__TEST_DIR__/mf_*.idoc');
+----
+4

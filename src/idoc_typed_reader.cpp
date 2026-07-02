@@ -107,20 +107,23 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 static unique_ptr<GlobalTableFunctionState> ReadSegmentInitGlobal(ClientContext &context,
                                                                   TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<ReadSegmentBindData>();
-	return MakeIdocScanState(bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
-	                         /*allow_xml_control=*/false);
+	return MakeIdocGlobal(context, bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
+	                      /*allow_xml_control=*/false);
+}
+static unique_ptr<LocalTableFunctionState> TypedInitLocal(ExecutionContext &, TableFunctionInitInput &,
+                                                          GlobalTableFunctionState *) {
+	return MakeIdocLocal();
 }
 
 static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<ReadSegmentBindData>();
-	auto &st = data_p.global_state->Cast<IdocScanState>();
+	auto &g = data_p.global_state->Cast<IdocGlobalState>();
+	auto &l = data_p.local_state->Cast<IdocLocalState>();
 	idx_t out_row = 0;
-	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
-		auto &rec = st.parsed.records[st.cursor++];
-		if (rec.is_control) {
-			continue;
-		}
-		if (RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[0])) != bind.segnam) { // SEGNAM
+	while (out_row < STANDARD_VECTOR_SIZE && IdocPeek(context, g, l)) {
+		auto &rec = l.pending;
+		if (rec.is_control || RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[0])) != bind.segnam) { // SEGNAM
+			IdocConsume(l);
 			continue;
 		}
 		auto sdata = GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]); // 1000-byte SDATA
@@ -133,8 +136,9 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 			output.SetValue(2 + i, out_row, Value(RTrim(erpl_idoc::DecodeText(raw, bind.encoding))));
 		}
 		if (bind.with_filename) {
-			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(l.current_file));
 		}
+		IdocConsume(l);
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -219,27 +223,26 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 static unique_ptr<GlobalTableFunctionState> ReadFieldsInitGlobal(ClientContext &context,
                                                                  TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<ReadFieldsBindData>();
-	return MakeIdocScanState(bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
-	                         /*allow_xml_control=*/false);
+	return MakeIdocGlobal(context, bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
+	                      /*allow_xml_control=*/false);
 }
 
 static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<ReadFieldsBindData>();
-	auto &st = data_p.global_state->Cast<IdocScanState>();
+	auto &g = data_p.global_state->Cast<IdocGlobalState>();
+	auto &l = data_p.local_state->Cast<IdocLocalState>();
 	idx_t out_row = 0;
-	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
-		auto &rec = st.parsed.records[st.cursor];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocPeek(context, g, l)) {
+		auto &rec = l.pending;
 		if (rec.is_control) {
-			st.cursor++;
-			st.field_cursor = 0;
+			IdocConsume(l);
 			continue;
 		}
 		auto segnam = RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[0]));
 		auto it = bind.fields_by_seg.find(segnam);
 		bool known = (it != bind.fields_by_seg.end());
 		if (!known && !bind.include_unknown) {
-			st.cursor++;
-			st.field_cursor = 0;
+			IdocConsume(l);
 			continue;
 		}
 		auto sdata = GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]);  // SDATA(1000)
@@ -247,14 +250,14 @@ static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, D
 		auto psgnum = RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[4]));
 		auto hlevel = RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[5]));
 		idx_t nfields = known ? it->second.size() : 1;
-		while (st.field_cursor < nfields && out_row < STANDARD_VECTOR_SIZE) {
+		while (l.field_cursor < nfields && out_row < STANDARD_VECTOR_SIZE) {
 			output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 			output.SetValue(1, out_row, Value(segnum));
 			output.SetValue(2, out_row, Value(psgnum));
 			output.SetValue(3, out_row, Value(hlevel));
 			output.SetValue(4, out_row, Value(segnam));
 			if (known) {
-				auto &f = it->second[st.field_cursor];
+				auto &f = it->second[l.field_cursor];
 				output.SetValue(5, out_row, Value::INTEGER(static_cast<int32_t>(f.field_pos)));
 				output.SetValue(6, out_row, Value(f.name));
 				output.SetValue(7, out_row, f.datatype.empty() ? Value(LogicalType::VARCHAR) : Value(f.datatype));
@@ -268,14 +271,13 @@ static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, D
 				output.SetValue(8, out_row, Value(RTrim(erpl_idoc::DecodeText(sdata, bind.encoding))));
 			}
 			if (bind.with_filename) {
-				output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+				output.SetValue(output.ColumnCount() - 1, out_row, Value(l.current_file));
 			}
-			st.field_cursor++;
+			l.field_cursor++;
 			out_row++;
 		}
-		if (st.field_cursor >= nfields) {
-			st.cursor++;
-			st.field_cursor = 0;
+		if (l.field_cursor >= nfields) {
+			IdocConsume(l);
 		}
 	}
 	output.SetCardinality(out_row);
@@ -288,7 +290,7 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 		TableFunctionSet set("sap_idoc_read_segment");
 		for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
 			TableFunction f("sap_idoc_read_segment", {first, LogicalType::VARCHAR, LogicalType::VARCHAR},
-			                ReadSegmentScan, ReadSegmentBind, ReadSegmentInitGlobal);
+			                ReadSegmentScan, ReadSegmentBind, ReadSegmentInitGlobal, TypedInitLocal);
 			f.named_parameters["framing"] = LogicalType::VARCHAR;
 			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
 			f.named_parameters["encoding"] = LogicalType::VARCHAR;
@@ -309,7 +311,7 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 		TableFunctionSet set("sap_idoc_read_fields");
 		for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
 			TableFunction f("sap_idoc_read_fields", {first, LogicalType::VARCHAR}, ReadFieldsScan, ReadFieldsBind,
-			                ReadFieldsInitGlobal);
+			                ReadFieldsInitGlobal, TypedInitLocal);
 			f.named_parameters["framing"] = LogicalType::VARCHAR;
 			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
 			f.named_parameters["encoding"] = LogicalType::VARCHAR;
