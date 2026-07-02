@@ -210,6 +210,143 @@ ParsedIdoc ParseImageLenient(const std::string &data) {
 	return result;
 }
 
+// ---- Streaming reader -------------------------------------------------------
+
+Framing DetectFramingPrefix(const char *data, size_t size) {
+	if (size < CONTROL_RECORD_LEN) {
+		throw std::runtime_error("IDoc image too short to detect framing (" + std::to_string(size) + " < " +
+		                         std::to_string(CONTROL_RECORD_LEN) + ")");
+	}
+	if (size > CONTROL_RECORD_LEN + 1 && data[CONTROL_RECORD_LEN] == '\r' && data[CONTROL_RECORD_LEN + 1] == '\n') {
+		return Framing::TERMINATED_CRLF;
+	}
+	if (size > CONTROL_RECORD_LEN && data[CONTROL_RECORD_LEN] == '\n') {
+		return Framing::TERMINATED_LF;
+	}
+	return Framing::FIXED;
+}
+
+RecordStreamer::RecordStreamer(ByteSource src, Framing framing, bool framing_known, bool lenient)
+    : src_(std::move(src)), framing_(framing), framing_known_(framing_known), lenient_(lenient) {
+}
+
+RecordStreamer::RecordStreamer(ByteSource src, Framing framing, bool lenient)
+    : RecordStreamer(std::move(src), framing, /*framing_known=*/true, lenient) {
+}
+
+RecordStreamer RecordStreamer::Auto(ByteSource src, bool lenient) {
+	return RecordStreamer(std::move(src), Framing::FIXED, /*framing_known=*/false, lenient);
+}
+
+bool RecordStreamer::Fill(size_t need) {
+	char tmp[8192];
+	while (buf_.size() < need && !eof_) {
+		size_t n = src_(tmp, sizeof(tmp));
+		if (n == 0) {
+			eof_ = true;
+			break;
+		}
+		buf_.append(tmp, n);
+		if (buf_.size() > high_water_) {
+			high_water_ = buf_.size();
+		}
+	}
+	return buf_.size() >= need;
+}
+
+bool RecordStreamer::Emit(std::string rec, IdocRecord &out) {
+	bool is_control = IsControlRecord(rec);
+	if (is_control) {
+		document_key_++;
+	}
+	out = IdocRecord{document_key_, record_index_++, is_control, std::move(rec)};
+	return true;
+}
+
+bool RecordStreamer::Next(IdocRecord &out) {
+	if (!framing_known_) {
+		Fill(CONTROL_RECORD_LEN + 2);
+		if (buf_.empty()) {
+			return false;
+		}
+		framing_ = DetectFramingPrefix(buf_.data(), buf_.size());
+		framing_known_ = true;
+	}
+
+	if (framing_ == Framing::FIXED) {
+		if (!Fill(6)) {
+			if (buf_.empty()) {
+				return false; // clean end of stream
+			}
+			if (lenient_) {
+				buf_.clear();
+				return false;
+			}
+			throw std::runtime_error("IDoc image is not aligned to fixed-width records (truncated or wrong framing)");
+		}
+		size_t block = (buf_.compare(0, 6, "EDI_DC") == 0) ? CONTROL_RECORD_LEN : DATA_RECORD_LEN;
+		if (!Fill(block)) {
+			if (lenient_) {
+				buf_.clear();
+				return false; // drop the trailing partial record
+			}
+			throw std::runtime_error("IDoc image is not aligned to fixed-width records (truncated or wrong framing)");
+		}
+		std::string rec = buf_.substr(0, block);
+		buf_.erase(0, block);
+		return Emit(std::move(rec), out);
+	}
+
+	// TERMINATED_LF / TERMINATED_CRLF: read until the next '\n', bounded by one record.
+	size_t nl;
+	while ((nl = buf_.find('\n')) == std::string::npos) {
+		if (buf_.size() > DATA_RECORD_LEN + 2) {
+			if (lenient_) {
+				buf_.clear();
+				return false;
+			}
+			throw std::runtime_error("terminated IDoc record exceeds maximum length without a terminator");
+		}
+		size_t before = buf_.size();
+		Fill(before + 4096);
+		if (buf_.size() == before) {
+			break; // EOF reached with no further data
+		}
+	}
+	if (nl == std::string::npos) {
+		if (buf_.empty()) {
+			return false;
+		}
+		// trailing record without a terminator (last line)
+		std::string line = std::move(buf_);
+		buf_.clear();
+		if (framing_ == Framing::TERMINATED_CRLF && !line.empty() && line.back() == '\r') {
+			line.pop_back();
+		}
+		if (!lenient_) {
+			size_t expected = IsControlRecord(line) ? CONTROL_RECORD_LEN : DATA_RECORD_LEN;
+			if (line.size() != expected) {
+				throw std::runtime_error("malformed terminated IDoc record: got " + std::to_string(line.size()) +
+				                         " bytes, expected " + std::to_string(expected));
+			}
+		}
+		return Emit(std::move(line), out);
+	}
+	std::string line = buf_.substr(0, nl);
+	buf_.erase(0, nl + 1);
+	if (framing_ == Framing::TERMINATED_CRLF && !line.empty() && line.back() == '\r') {
+		line.pop_back();
+	}
+	if (!lenient_) {
+		size_t expected = IsControlRecord(line) ? CONTROL_RECORD_LEN : DATA_RECORD_LEN;
+		if (line.size() != expected) {
+			throw std::runtime_error("malformed terminated IDoc record #" + std::to_string(record_index_) + ": got " +
+			                         std::to_string(line.size()) + " bytes, expected " + std::to_string(expected));
+		}
+	}
+	return Emit(std::move(line), out);
+}
+
 std::string DecodeText(const std::string &raw, const std::string &encoding) {
 	std::string lower;
 	for (char c : encoding) {

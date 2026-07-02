@@ -37,7 +37,8 @@ VCPKG_PREFIX := $(patsubst %/include/tinyxml2.h,%,$(VCPKG_TXML_H))
 core_tests_format:
 	mkdir -p build
 	g++ -std=c++17 -O0 -g -Isrc/include -Isrc/idoc -Iduckdb/third_party/catch \
-	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp src/idoc/idoc_format.cpp \
+	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp test/cpp/test_idoc_stream.cpp \
+	    src/idoc/idoc_format.cpp \
 	    -o build/core_tests_format
 	IDOC_FIXTURE=test/fixtures/flight.idoc build/core_tests_format
 
@@ -46,7 +47,7 @@ core_tests_format:
 .PHONY: core_tests
 core_tests:
 	g++ -std=c++17 -O0 -g -Isrc/include -Isrc/idoc -I$(VCPKG_PREFIX)/include -Iduckdb/third_party/catch \
-	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp test/cpp/test_idoc_xml.cpp \
+	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp test/cpp/test_idoc_stream.cpp test/cpp/test_idoc_xml.cpp \
 	    src/idoc/idoc_format.cpp src/idoc/idoc_xml.cpp \
 	    -L$(VCPKG_PREFIX)/lib -ltinyxml2 \
 	    -o build/core_tests
