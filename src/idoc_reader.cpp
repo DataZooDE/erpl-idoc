@@ -199,46 +199,49 @@ static void AddReaderParams(TableFunction &f) {
 	f.named_parameters["filename"] = LogicalType::BOOLEAN; // add a source-file column
 }
 
+// Build an overload set for a reader: the first argument is either a VARCHAR
+// path/glob or a LIST(VARCHAR) of paths/globs; everything else is shared.
+static TableFunctionSet MakeReaderSet(const string &name, table_function_t scan, table_function_bind_t bind,
+                                      table_function_init_global_t init) {
+	TableFunctionSet set(name);
+	for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
+		TableFunction f(name, {first}, scan, bind, init);
+		AddReaderParams(f);
+		set.AddFunction(std::move(f));
+	}
+	return set;
+}
+
 void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
-	{
-		TableFunction f("sap_idoc_read", {LogicalType::VARCHAR}, ReadIdocScan, ReadIdocBind, IdocInitGlobal);
-		AddReaderParams(f);
-		RegisterDocTableFunction(
-		    loader, std::move(f),
-		    "Read one or many SAP IDoc flat files as generic long rows: one row per data (EDI_DD40) record with "
-		    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. The path may "
-		    "be a single file or a glob ('dir/*.idoc', 's3://bucket/idocs/*.idoc') resolved over DuckDB's "
-		    "filesystem. Framing is auto-detected; 'lenient' salvages truncated files, 'encoding' decodes non-UTF-8 "
-		    "SDATA, and 'filename := true' adds the source-file column.",
-		    {"SELECT * FROM sap_idoc_read('flight.idoc')",
-		     "SELECT filename, segnam FROM sap_idoc_read('corpus/*.idoc', filename=true)"},
-		    {"path"});
-	}
-	{
-		TableFunction f("sap_idoc_read_control", {LogicalType::VARCHAR}, ReadIdocControlScan, ReadIdocControlBind,
-		                IdocInitGlobal);
-		AddReaderParams(f);
-		RegisterDocTableFunction(
-		    loader, std::move(f),
-		    "Read the typed control record(s) of one or many SAP IDoc flat (or XML) files — all 36 EDI_DC40 fields "
-		    "(tabnam, docnum, idoctyp, mestyp, sndprn, rcvprn, …) plus a document_key. One row per IDoc; accepts a "
-		    "glob and 'filename := true'.",
-		    {"SELECT idoctyp, mestyp, sndprn FROM sap_idoc_read_control('flight.idoc')",
-		     "SELECT filename, idoctyp FROM sap_idoc_read_control('corpus/*.idoc', filename=true)"},
-		    {"path"});
-	}
-	{
-		TableFunction f("sap_idoc_read_raw", {LogicalType::VARCHAR}, ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal);
-		AddReaderParams(f);
-		RegisterDocTableFunction(
-		    loader, std::move(f),
-		    "Read every physical record of one or many SAP IDoc flat files with exact bytes: document_key, "
-		    "record_index, record_type ('C' control / 'D' data) and raw_record (BLOB). Byte-exact source for the "
-		    "writer — COPY (…) TO … (FORMAT sap_idoc). Accepts a glob and 'filename := true'.",
-		    {"COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index) TO 'g.idoc' (FORMAT "
-		     "sap_idoc)"},
-		    {"path"});
-	}
+	RegisterDocTableFunctionSet(
+	    loader, MakeReaderSet("sap_idoc_read", ReadIdocScan, ReadIdocBind, IdocInitGlobal),
+	    "Read one or many SAP IDoc flat files as generic long rows: one row per data (EDI_DD40) record with "
+	    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. The path may "
+	    "be a single file, a glob ('dir/*.idoc', 's3://bucket/idocs/*.idoc') resolved over DuckDB's filesystem, "
+	    "or a LIST of paths. Framing is auto-detected; 'lenient' salvages truncated files, 'encoding' decodes "
+	    "non-UTF-8 SDATA, and 'filename := true' adds the source-file column.",
+	    {"SELECT * FROM sap_idoc_read('flight.idoc')",
+	     "SELECT filename, segnam FROM sap_idoc_read('corpus/*.idoc', filename=true)",
+	     "SELECT * FROM sap_idoc_read(['a.idoc', 'b.idoc'])"},
+	    {"path"});
+
+	RegisterDocTableFunctionSet(
+	    loader, MakeReaderSet("sap_idoc_read_control", ReadIdocControlScan, ReadIdocControlBind, IdocInitGlobal),
+	    "Read the typed control record(s) of one or many SAP IDoc flat (or XML) files — all 36 EDI_DC40 fields "
+	    "(tabnam, docnum, idoctyp, mestyp, sndprn, rcvprn, …) plus a document_key. One row per IDoc; accepts a "
+	    "single path, a glob, or a LIST of paths, and 'filename := true'.",
+	    {"SELECT idoctyp, mestyp, sndprn FROM sap_idoc_read_control('flight.idoc')",
+	     "SELECT filename, idoctyp FROM sap_idoc_read_control('corpus/*.idoc', filename=true)"},
+	    {"path"});
+
+	RegisterDocTableFunctionSet(
+	    loader, MakeReaderSet("sap_idoc_read_raw", ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal),
+	    "Read every physical record of one or many SAP IDoc flat files with exact bytes: document_key, "
+	    "record_index, record_type ('C' control / 'D' data) and raw_record (BLOB). Byte-exact source for the "
+	    "writer — COPY (…) TO … (FORMAT sap_idoc). Accepts a single path, a glob, or a LIST, and 'filename := true'.",
+	    {"COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index) TO 'g.idoc' (FORMAT "
+	     "sap_idoc)"},
+	    {"path"});
 }
 
 } // namespace duckdb

@@ -282,40 +282,53 @@ static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, D
 }
 
 void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
-	TableFunction f("sap_idoc_read_segment", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                ReadSegmentScan, ReadSegmentBind, ReadSegmentInitGlobal);
-	f.named_parameters["framing"] = LogicalType::VARCHAR;
-	f.named_parameters["lenient"] = LogicalType::BOOLEAN;
-	f.named_parameters["encoding"] = LogicalType::VARCHAR;
-	f.named_parameters["filename"] = LogicalType::BOOLEAN;
-	RegisterDocTableFunction(
-	    loader, std::move(f),
-	    "Typed read of one IDoc segment type: split each segment's SDATA into named, typed columns using a "
-	    "segment dictionary. 'dict' is the dictionary source — a .csv/.parquet path, a table/view name, or a "
-	    "relation expression (SPEC B4 columns: segnam, field_pos, field_name, offset, length, datatype). The "
-	    "dictionary's origin (live erpl_rfc, persisted file, hand-authored) is irrelevant.",
-	    {"SELECT airlineid, flightdate FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv')",
-	     "SELECT * FROM sap_idoc_read_segment('f.idoc', 'E1BPSBONEW', 'dict_view')"},
-	    {"path", "segnam", "dict"});
-
-	TableFunction ff("sap_idoc_read_fields", {LogicalType::VARCHAR, LogicalType::VARCHAR}, ReadFieldsScan,
-	                 ReadFieldsBind, ReadFieldsInitGlobal);
-	ff.named_parameters["framing"] = LogicalType::VARCHAR;
-	ff.named_parameters["lenient"] = LogicalType::BOOLEAN;
-	ff.named_parameters["encoding"] = LogicalType::VARCHAR;
-	ff.named_parameters["include_unknown"] = LogicalType::BOOLEAN;
-	ff.named_parameters["filename"] = LogicalType::BOOLEAN;
-	RegisterDocTableFunction(
-	    loader, std::move(ff),
-	    "Decode ALL fields of every record in an IDoc using a segment dictionary — one call, long form: one row "
-	    "per (record, field) with document_key, segnum, psgnum, hlevel, segnam, field_pos, field_name, datatype, "
-	    "value. SDATA is sliced byte-correctly (same decoding as sap_idoc_read_segment). Segments absent from the "
-	    "dictionary yield one row with NULL field_name/field_pos and the raw trimmed SDATA (set include_unknown => "
-	    "false to drop them). 'dict' is any dictionary source: a .csv/.parquet path, a table/view name, or a "
-	    "relation expression.",
-	    {"SELECT segnam, field_name, value FROM sap_idoc_read_fields('flight.idoc', 'flight_dict.csv')",
-	     "SELECT * FROM sap_idoc_read_fields('f.idoc', 'dict') WHERE segnam = 'E1BPSBONEW'"},
-	    {"path", "dict"});
+	// The first argument (the IDoc path) is either a VARCHAR path/glob or a
+	// LIST(VARCHAR); the trailing fixed args (segnam, dict) are unchanged.
+	{
+		TableFunctionSet set("sap_idoc_read_segment");
+		for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
+			TableFunction f("sap_idoc_read_segment", {first, LogicalType::VARCHAR, LogicalType::VARCHAR},
+			                ReadSegmentScan, ReadSegmentBind, ReadSegmentInitGlobal);
+			f.named_parameters["framing"] = LogicalType::VARCHAR;
+			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
+			f.named_parameters["encoding"] = LogicalType::VARCHAR;
+			f.named_parameters["filename"] = LogicalType::BOOLEAN;
+			set.AddFunction(std::move(f));
+		}
+		RegisterDocTableFunctionSet(
+		    loader, std::move(set),
+		    "Typed read of one IDoc segment type: split each segment's SDATA into named, typed columns using a "
+		    "segment dictionary. Accepts a single path, a glob, or a LIST of paths (+ 'filename := true'). 'dict' is "
+		    "the dictionary source — a .csv/.parquet path, a table/view name, or a relation expression (SPEC B4 "
+		    "columns: segnam, field_pos, field_name, offset, length, datatype).",
+		    {"SELECT airlineid, flightdate FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv')",
+		     "SELECT * FROM sap_idoc_read_segment('corpus/*.idoc', 'E1BPSBONEW', 'dict_view')"},
+		    {"path", "segnam", "dict"});
+	}
+	{
+		TableFunctionSet set("sap_idoc_read_fields");
+		for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
+			TableFunction f("sap_idoc_read_fields", {first, LogicalType::VARCHAR}, ReadFieldsScan, ReadFieldsBind,
+			                ReadFieldsInitGlobal);
+			f.named_parameters["framing"] = LogicalType::VARCHAR;
+			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
+			f.named_parameters["encoding"] = LogicalType::VARCHAR;
+			f.named_parameters["include_unknown"] = LogicalType::BOOLEAN;
+			f.named_parameters["filename"] = LogicalType::BOOLEAN;
+			set.AddFunction(std::move(f));
+		}
+		RegisterDocTableFunctionSet(
+		    loader, std::move(set),
+		    "Decode ALL fields of every record in an IDoc using a segment dictionary — one call, long form: one row "
+		    "per (record, field) with document_key, segnum, psgnum, hlevel, segnam, field_pos, field_name, datatype, "
+		    "value. SDATA is sliced byte-correctly (same decoding as sap_idoc_read_segment). Accepts a single path, a "
+		    "glob, or a LIST of paths (+ 'filename := true'). Segments absent from the dictionary yield one row with "
+		    "NULL field_name/field_pos and the raw trimmed SDATA (set include_unknown => false to drop them). 'dict' "
+		    "is any dictionary source: a .csv/.parquet path, a table/view name, or a relation expression.",
+		    {"SELECT segnam, field_name, value FROM sap_idoc_read_fields('flight.idoc', 'flight_dict.csv')",
+		     "SELECT * FROM sap_idoc_read_fields('corpus/*.idoc', 'dict', filename=true) WHERE segnam = 'E1BPSBONEW'"},
+		    {"path", "dict"});
+	}
 }
 
 } // namespace duckdb

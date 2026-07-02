@@ -166,10 +166,15 @@ SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sou
 | `sap_idoc_read_raw(path [, …])` | one row per physical record with exact bytes — the byte-exact writer source |
 | `sap_idoc_read_xml(path)` | generic long rows from an IDoc-XML file (self-describing; no dictionary) |
 
-Every reader accepts a **single path or a glob**, resolved through DuckDB's virtual
-filesystem — so a whole directory works, including remote stores (`s3://…`, `http(s)://…`,
-`gs://…`) once the matching extension is loaded (`INSTALL httpfs; LOAD httpfs;`) and a
-`CREATE SECRET` is set for credentials:
+Every reader accepts a **single path, a glob, or a `LIST` of paths**, resolved through
+DuckDB's virtual filesystem — so a whole directory works, including remote stores
+(`s3://…`, `http(s)://…`, `gs://…`) once the matching extension is loaded
+(`INSTALL httpfs; LOAD httpfs;`) and a `CREATE SECRET` is set for credentials:
+
+```sql
+SELECT * FROM sap_idoc_read(['a.idoc', 'b.idoc']);          -- explicit list
+```
+
 
 ```sql
 SELECT filename, idoctyp FROM sap_idoc_read_control('s3://bucket/idocs/*.idoc', filename=true);
