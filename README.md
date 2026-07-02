@@ -34,7 +34,7 @@ composes with `erpl_rfc` when you want live-SAP round trips.
   losslessly.
 - **Byte-exact round trips** — `read → write` reproduces the input file bit-for-bit.
 - **Offline & portable** — the core needs no SAP and no network; works on a detached,
-  air-gapped host. Linux/macOS/Windows/Wasm.
+  air-gapped host. Linux, macOS, and Windows.
 - **Framing & encoding** — contiguous fixed-width or LF/CRLF ports (auto-detected);
   UTF-8 and `latin-1` codepages; lenient mode for truncated files.
 - **Composes with `erpl_rfc`** — fetch the dictionary from a live system, or import a
