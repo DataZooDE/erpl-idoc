@@ -54,12 +54,17 @@ static void MaybeAddFilenameColumn(const IdocReadBindData &bind, vector<LogicalT
 	}
 }
 
-// Init: build the shared lazy multi-file scan state. Only the control reader may parse
-// IDoc-XML (its records are self-describing); data/raw operate on the flat form.
+// Init: build the parallel work queue (global) and the per-thread streamer (local).
+// Only the control reader may parse IDoc-XML (its records are self-describing);
+// data/raw operate on the flat form.
 static unique_ptr<GlobalTableFunctionState> IdocInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<IdocReadBindData>();
-	return MakeIdocScanState(bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
-	                         bind.kind == ReaderKind::CONTROL);
+	return MakeIdocGlobal(context, bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
+	                      bind.kind == ReaderKind::CONTROL);
+}
+static unique_ptr<LocalTableFunctionState> IdocInitLocal(ExecutionContext &, TableFunctionInitInput &,
+                                                         GlobalTableFunctionState *) {
+	return MakeIdocLocal();
 }
 
 // ---------------------------------------------------------------------------
@@ -82,12 +87,14 @@ static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFuncti
 
 static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
-	auto &st = data_p.global_state->Cast<IdocScanState>();
+	auto &g = data_p.global_state->Cast<IdocGlobalState>();
+	auto &l = data_p.local_state->Cast<IdocLocalState>();
 	idx_t out_row = 0;
-	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
-		auto &rec = st.parsed.records[st.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocPeek(context, g, l)) {
+		auto &rec = l.pending;
 		if (rec.is_control) {
-			continue; // sap_idoc_read only surfaces data records
+			IdocConsume(l); // sap_idoc_read only surfaces data records
+			continue;
 		}
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 		output.SetValue(1, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[2])))); // DOCNUM
@@ -99,8 +106,9 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 		output.SetValue(7, out_row,
 		                Value(erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]), bind.encoding)));
 		if (bind.with_filename) {
-			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(l.current_file));
 		}
+		IdocConsume(l);
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -133,11 +141,13 @@ static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, Tabl
 
 static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
-	auto &st = data_p.global_state->Cast<IdocScanState>();
+	auto &g = data_p.global_state->Cast<IdocGlobalState>();
+	auto &l = data_p.local_state->Cast<IdocLocalState>();
 	idx_t out_row = 0;
-	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
-		auto &rec = st.parsed.records[st.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocPeek(context, g, l)) {
+		auto &rec = l.pending;
 		if (!rec.is_control) {
+			IdocConsume(l);
 			continue;
 		}
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
@@ -146,8 +156,9 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 			output.SetValue(1 + i, out_row, Value(RTrim(raw)));
 		}
 		if (bind.with_filename) {
-			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(l.current_file));
 		}
+		IdocConsume(l);
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -172,17 +183,19 @@ static unique_ptr<FunctionData> ReadIdocRawBind(ClientContext &context, TableFun
 
 static void ReadIdocRawScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
-	auto &st = data_p.global_state->Cast<IdocScanState>();
+	auto &g = data_p.global_state->Cast<IdocGlobalState>();
+	auto &l = data_p.local_state->Cast<IdocLocalState>();
 	idx_t out_row = 0;
-	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
-		auto &rec = st.parsed.records[st.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocPeek(context, g, l)) {
+		auto &rec = l.pending;
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 		output.SetValue(1, out_row, Value::BIGINT(rec.record_index));
 		output.SetValue(2, out_row, Value(rec.is_control ? "C" : "D"));
 		output.SetValue(3, out_row, Value::BLOB_RAW(rec.bytes));
 		if (bind.with_filename) {
-			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(l.current_file));
 		}
+		IdocConsume(l);
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -205,7 +218,7 @@ static TableFunctionSet MakeReaderSet(const string &name, table_function_t scan,
                                       table_function_init_global_t init) {
 	TableFunctionSet set(name);
 	for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
-		TableFunction f(name, {first}, scan, bind, init);
+		TableFunction f(name, {first}, scan, bind, init, IdocInitLocal);
 		AddReaderParams(f);
 		set.AddFunction(std::move(f));
 	}
