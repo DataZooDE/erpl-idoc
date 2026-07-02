@@ -187,6 +187,11 @@ adds a source-file column (handy across a glob). `sap_idoc_read_fields` also tak
 `include_unknown := false` to drop segments absent from the dictionary (default keeps
 them as one row with the raw trimmed `SDATA`).
 
+The readers are **streaming and parallel**: each file is parsed record-by-record in
+constant memory (never fully buffered), and a glob/`LIST` is read with one thread per
+file. Rows are therefore **unordered across files** (order within a file is preserved) —
+add `ORDER BY` if you need a stable order, exactly as with `read_csv`/`read_parquet`.
+
 ```sql
 -- Decode a whole IDoc — all segments, all fields — in one call:
 SELECT segnam, field_name, value
