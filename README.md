@@ -1,182 +1,289 @@
-# erpl_idoc — SAP IDoc flat files for DuckDB
+<a name="top"></a>
 
-`erpl_idoc` makes **DuckDB a first-class SAP IDoc reader and writer**: query IDoc
-flat files as SQL tables, and emit byte-valid IDoc files from SQL. It extends the
-[erpl](https://github.com/DataZooDE/erpl) SAP data-plane family (`erpl_rfc`,
-`erpl_odp`, `erpl_bics`) down to the document/EDI layer, and **composes with
-`erpl_rfc`** for optional live-SAP round trips.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.4+-green.svg)](https://duckdb.org)
+[![Community Extension](https://img.shields.io/badge/DuckDB-Community%20Extension-informational.svg)](https://duckdb.org/community_extensions/)
+[![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
-- **Flat-file core is pure and offline** — no SAP, no NW RFC SDK. Builds and works
-  on Linux/macOS/Windows/Wasm with `erpl_rfc` absent.
-- **Generic mode** (raw records, byte-exact round trip) and **typed mode**
-  (`SDATA` split into typed columns via a segment dictionary).
-- **Dictionary as data** — the same DuckDB relation whether it came from a live
-  system (via `erpl_rfc`), a persisted Parquet/CSV, or a hand-authored table.
-- **No RFC inside `erpl_idoc`** — every live-SAP interaction is `erpl_rfc`,
-  orchestrated in SQL.
+# ERPL IDoc — Read & Write SAP IDoc files in DuckDB
 
-## SQL surface
+**Turn SAP IDoc files into SQL tables — and SQL back into byte-valid IDoc files.**
+`erpl_idoc` is a DuckDB extension for the SAP **IDoc** (Intermediate Document) format:
+the fixed-width flat files and the self-describing IDoc-XML that ALE/EDI interfaces
+exchange every day. Parse them, decode the opaque `SDATA` into typed columns, generate
+new IDocs from a query, and convert flat ⇄ XML — all in plain SQL, all offline. It’s the
+document/EDI layer of the **erpl** SAP family (`erpl_rfc`, `erpl_odp`, `erpl_bics`), and
+composes with `erpl_rfc` when you want live-SAP round trips.
 
-### Reader
+> SEO topics: DuckDB SAP IDoc, read IDoc file SQL, parse EDI_DC40 EDI_DD40, IDoc flat file
+> to table, IDoc XML to flat, generate IDoc from SQL, SAP ALE EDI DuckDB, decode SDATA,
+> segment dictionary WE60, IDOCTYPE_READ_COMPLETE, IDoc round trip.
 
-| Function | Result |
-|---|---|
-| `sap_idoc_read(path [, framing, lenient, encoding])` | generic long: one row per **data** record — `document_key, docnum, segnum, segnam, psgnum, hlevel, mandt, sdata` |
-| `sap_idoc_read_control(path [, …])` | typed control record — all 36 `EDI_DC40` fields |
-| `sap_idoc_read_raw(path [, …])` | one row per **physical** record with exact bytes — `document_key, record_index, record_type ('C'/'D'), raw_record BLOB` |
-| `sap_idoc_read_segment(path, segnam, dict [, framing, lenient, encoding])` | typed: one column per dictionary field of `segnam`, sliced from `SDATA` |
+## ✨ Highlights
 
-Parameters: `framing` = `'fixed'` (default, contiguous) \| `'lf'` \| `'crlf'`
-(auto-detected when omitted); `lenient` = salvage complete records from a truncated
-file; `encoding` = `'utf-8'` (default) \| `'latin-1'` (SDATA text decode).
+- **Read any IDoc file as a table** — one `SELECT` over a flat IDoc or IDoc-XML file.
+- **Typed decode** — split the opaque 1000-char `SDATA` into named, typed columns via a
+  segment dictionary. The control record (`EDI_DC40`, all 36 fields) reads typed too.
+- **Write byte-valid IDocs from SQL** — `COPY (…) TO 'x.idoc' (FORMAT sap_idoc)`; the
+  writer recomputes derived fields (`SEGNUM`, `PSGNUM`, `HLEVEL`, lengths).
+- **Flat ⇄ IDoc-XML conversion** — modernize a flat interface to XML or vice versa,
+  losslessly.
+- **Byte-exact round trips** — `read → write` reproduces the input file bit-for-bit.
+- **Offline & portable** — the core needs no SAP and no network; works on a detached,
+  air-gapped host. Linux/macOS/Windows/Wasm.
+- **Framing & encoding** — contiguous fixed-width or LF/CRLF ports (auto-detected);
+  UTF-8 and `latin-1` codepages; lenient mode for truncated files.
+- **Composes with `erpl_rfc`** — fetch the dictionary from a live system, or import a
+  generated IDoc, using documented SQL — but `erpl_idoc` itself never speaks RFC.
 
-### Writer
+---
 
-```sql
-COPY (<single BLOB/VARCHAR column of raw records>) TO 'file.idoc' (FORMAT sap_idoc [, framing 'fixed'|'lf'|'crlf']);
-```
-
-The writer frames raw records into a file. Compose records with the pure encoders:
-
-| Scalar | Result |
-|---|---|
-| `sap_idoc_encode_sdata(offsets LIST<INT>, lengths LIST<INT>, values LIST<VARCHAR>)` | a 1000-byte `SDATA` |
-| `sap_idoc_encode_data_record(segnam, mandt, docnum, segnum, psgnum, hlevel, sdata)` | a 1063-byte `EDI_DD40` BLOB |
-| `sap_idoc_encode_control(values LIST<VARCHAR>)` | a 524-byte `EDI_DC40` BLOB |
-
-### Round-trip contract (holds byte-for-byte)
-
-```sql
-COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index)
-  TO 'g.idoc' (FORMAT sap_idoc);        -- g.idoc ≡ f.idoc, byte-for-byte
-```
-
-## Typed mode & the segment dictionary
-
-The dictionary is a relation with the schema (SPEC B4):
-`idoctyp, cimtyp, release, segnam, segdef, field_pos, field_name, offset, length,
-datatype, data_element, description, mandatory`. Its **origin is irrelevant** to the
-parser:
-
-- **Offline** — a CSV/Parquet file or any table/view:
-  ```sql
-  SELECT airlineid, flightdate
-  FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv');
-  ```
-- **Online (composes `erpl_rfc`)** — the extension ships two SQL macros,
-  `sap_idoc_params(idoctyp [,cimtyp,version])` and `sap_idoc_dictionary(params)`:
-  ```sql
-  LOAD erpl_rfc; LOAD erpl_idoc;
-  CREATE SECRET a4h (TYPE sap_rfc, ASHOST '…', SYSNR '00', CLIENT '001', USER '…', PASSWD '…', LANG 'EN');
-  SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01'));
-  ```
-  Persist it once to seed repeatable offline runs (the **connected → detached-host** bridge):
-  ```sql
-  COPY (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01')))
-       TO 'flight.dict.parquet' (FORMAT parquet);
-  ```
-  Then on a SAP-less host, `sap_idoc_read_segment(idoc, seg, 'flight.dict.parquet')` — no `erpl_rfc`.
-  (`erpl_idoc` never calls RFC; the macro composes `erpl_rfc` at the SQL layer. The two-macro
-  split is required because `sap_rfc_invoke` evaluates its arg at bind time — see
-  [`sql/sap_idoc_dictionary.sql`](sql/sap_idoc_dictionary.sql).)
-
-### Creating dictionary files
-
-- **In SQL** (online → file), using the shipped macros + native `COPY`:
-  ```sql
-  COPY (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('MATMAS05'))) TO 'matmas05.dict.parquet' (FORMAT parquet);
-  ```
-- **Export helper** (turn-key, batch): [`scripts/export_idoc_dict.sh`](scripts/export_idoc_dict.sh)
-  ```sh
-  scripts/export_idoc_dict.sh FLIGHTBOOKING_CREATEFROMDAT01 --format parquet --out flight.dict.parquet
-  scripts/export_idoc_dict.sh --batch types.txt --format parquet --out-dir dicts/   # many types
-  ```
-- **Hand-authoring** (offline, no SAP) — extension functions:
-  - `sap_idoc_dict_offsets(src)` — supply only `segnam, field_pos, field_name, length[, datatype]`;
-    offsets are computed from cumulative widths.
-  - `sap_idoc_dict_validate(src)` — returns one row per structural problem (out-of-bounds
-    offsets, overlaps, non-positive lengths, duplicate positions); empty = sound.
-  ```sql
-  COPY (SELECT * FROM sap_idoc_dict_offsets('my_fields.csv')) TO 'my.dict.parquet' (FORMAT parquet);
-  SELECT * FROM sap_idoc_dict_validate('my.dict.parquet');   -- should return no rows
-  ```
-- **Normalizer** `sap_idoc_dict_from_fields(PT_FIELDS, idoctyp, cimtyp, release)` — maps a raw
-  `IDOCTYPE_READ_COMPLETE` field list to the B4 schema (what `sap_idoc_dictionary` uses
-  internally; call it directly if you issue the `sap_rfc_invoke` yourself).
-- **From DDIC**: `sap_read_table('EDISDEF')` + `sap_read_table('EDSAPPL')` when
-  `IDOCTYPE_READ_COMPLETE` is restricted (see `sql/dict_helpers.sql`).
-  (`src` is a `.csv`/`.parquet` path, a table/view name, or a relation expression.)
-
-## Typed write
-
-See [`sql/write_idoc_typed.sql`](sql/write_idoc_typed.sql): compose `SDATA` from typed
-values + the dictionary, **recompute derived fields** (`SEGNUM` sequential, `PSGNUM`
-= parent at `HLEVEL-1`, `HLEVEL` from input), encode records, and `COPY (… FORMAT sap_idoc)`.
-
-## IDoc-XML
-
-`erpl_idoc` also reads and writes the **self-describing IDoc-XML** serialization (fields
-are named XML elements; hierarchy is XML nesting). XML parsing uses vendored
-**tinyxml2**; still pure/offline, no RFC.
-
-| Function | Result |
-|---|---|
-| `sap_idoc_read_xml(path)` | generic long rows: `document_key, seq, segnam, hlevel, field_name, value` (control as `segnam='EDI_DC40'`). Self-describing — **no dictionary**. |
-| `sap_idoc_to_xml(flat_path, dict)` | convert a flat IDoc file → IDoc-XML text |
-| `sap_idoc_xml_to_records(xml_path, dict)` | convert IDoc-XML → flat records (recompute `SEGNUM/PSGNUM`, pack `SDATA` per the dictionary) → feed `COPY (FORMAT sap_idoc)` |
-
-`sap_idoc_read_control` is XML-aware too (dict-free). Conversion needs the dictionary
-only to map `SDATA` offsets ↔ named fields.
-
-```sql
--- flat -> XML
-SELECT xml FROM sap_idoc_to_xml('flight.idoc', 'flight_dict.csv');
-
--- XML -> flat (byte-exact with the dictionary), then write it
-COPY (SELECT raw_record FROM sap_idoc_xml_to_records('flight.xml','flight_dict.csv') ORDER BY record_index)
-  TO 'out.idoc' (FORMAT sap_idoc);
-```
-
-**Contracts (verified on the real A4H trial):** `xml→flat` reproduces the captured
-`flight.idoc` **byte-for-byte**, `flat→xml→flat` is byte-exact, and the XML-derived
-flat IDoc is **accepted by A4H inbound** (segments stored).
-
-## Live-SAP composition (optional)
-
-`erpl_idoc` never calls RFC. Live exchange is documented SQL that composes `erpl_rfc`:
-fetch a dictionary (above), or import an IDoc the extension wrote. Note the
-`IDOCTP`(DB table `EDIDC`) vs `IDOCTYP`(flat `EDI_DC40`) field-name divergence — the
-reader/writer map it explicitly.
-
-## Build & test
-
-```sh
-make debug         # build extension (DuckDB v1.5.4 submodule) + test runner
-make test          # DuckDB SQL tests (test/sql/*.test)
-make sql_tests     # same, one file at a time
-make core_tests    # fast, DuckDB-free unit tests for the format core (Catch2)
-make e2e           # live A4H end-to-end (needs erpl_rfc + a reachable SAP system; self-skips otherwise)
-```
-
-The offline SQL suite and `core_tests` pass **with `erpl_rfc` absent** — that is the
-cross-platform CI gate. Live E2E tests (dictionary symmetry, typed read, and A4H
-inbound acceptance) run against the local `sapse/abap-cloud-developer-trial` (A4H).
-
-## Distribution
-
-Community-extension descriptor: [`packaging/description.yml`](packaging/description.yml)
-(min DuckDB **v1.5.4**, built against the stable C-extension API). Install once
-published:
+## 🚀 Install
 
 ```sql
 INSTALL erpl_idoc FROM community;
 LOAD erpl_idoc;
 ```
 
-## Status / scope (v1)
+That’s it — no SAP connection required to read, write, or convert IDoc files.
 
-In scope: flat-file `EDI_DC40`/`EDI_DD40`, generic + typed read/write, control-record
-parse/emit, dictionary (online/offline), both framings, multi-IDoc, lenient/error
-handling, `latin-1`/UTF-8 SDATA decode, **IDoc-XML** read/write + flat↔XML conversion.
-Not yet: `EDIDS` **status records** side output (FR-R7 — deferred, no fixture available),
-X12/EDIFACT conversion, business-semantic validation.
+---
+
+## ⚡ Quick Start
+
+### Read an IDoc file
+
+```sql
+-- one row per data record: segment name, hierarchy, and the raw SDATA payload
+SELECT segnam, hlevel, sdata
+FROM sap_idoc_read('orders.idoc');
+
+-- the envelope (control record) as 36 typed columns
+SELECT idoctyp, mestyp, sndprn, rcvprn, credat
+FROM sap_idoc_read_control('orders.idoc');
+```
+
+### Decode SDATA into typed columns
+
+`SDATA` is opaque fixed-width until you apply a **segment dictionary**. Point at one
+(a CSV/Parquet file, a table, or a view) and get named columns:
+
+```sql
+SELECT airlineid, flightdate, customerid, class, passname
+FROM sap_idoc_read_segment('booking.idoc', 'E1BPSBONEW', 'flightbooking.dict.parquet');
+-- LH | 20260715 | 00000042 | Y | MUELLER
+```
+
+### Generate an IDoc file from SQL
+
+Compose records from your data and write a byte-valid IDoc:
+
+```sql
+COPY (
+  SELECT raw_record
+  FROM sap_idoc_read_raw('template.idoc')   -- or build records with the encoders
+  ORDER BY record_index
+) TO 'outbound.idoc' (FORMAT sap_idoc);
+```
+
+### Convert flat ⇄ IDoc-XML
+
+```sql
+-- flat  → self-describing XML
+SELECT xml FROM sap_idoc_to_xml('orders.idoc', 'orders.dict.parquet');
+
+-- XML → flat (write it out)
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('orders.xml','orders.dict.parquet') ORDER BY record_index)
+  TO 'orders.idoc' (FORMAT sap_idoc);
+```
+
+---
+
+## 💡 Use cases
+
+### 1. Land inbound IDocs in your warehouse
+A partner drops `ORDERS05`/`INVOIC02`/`MATMAS05` files on a landing zone. Query them
+straight into DuckDB for staging, validation, and analytics — no middleware:
+
+```sql
+CREATE TABLE staged_orders AS
+SELECT document_key, hdr.*
+FROM sap_idoc_read_segment('inbox/po_4711.idoc', 'E1EDK01', 'orders.dict.parquet') hdr;
+```
+
+### 2. Decode & reconcile opaque payloads
+SAP/ALE consultants: split `SDATA` into fields and reconcile values against the segment
+definition, or diff two IDocs field-by-field:
+
+```sql
+SELECT segnam, field_name, value
+FROM sap_idoc_read_xml('doc.xml')            -- self-describing, no dictionary needed
+WHERE value <> '';
+```
+
+### 3. Produce outbound IDocs from transformed data
+Build IDoc content in SQL (joins, lookups, mappings) and emit a file a SAP file-port
+or inbound processing accepts. The writer handles fixed-width packing and derived-field
+math for you.
+
+### 4. Migrate a flat-file interface to IDoc-XML (or back)
+Two systems, two serializations. Convert losslessly in one step — `flat → xml → flat`
+is byte-exact — so you can switch a port’s format without touching the payload.
+
+### 5. Typed decode on an air-gapped host
+Fetch the segment dictionary **once** from a connected system, persist it to Parquet,
+then decode IDocs on a detached host with **no SAP and no `erpl_rfc`**:
+
+```sql
+-- on a SAP-less machine — only erpl_idoc + the dictionary file
+SELECT * FROM sap_idoc_read_segment('doc.idoc', 'E1BPSBONEW', 'flightbooking.dict.parquet');
+```
+
+### 6. Validate before you send
+Catch structural problems early — bad offsets, overlaps, missing fields — and keep a
+byte-exact round trip as your safety net:
+
+```sql
+SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sound
+```
+
+---
+
+## 📖 Function reference
+
+### Reading
+
+| Function | What you get |
+|---|---|
+| `sap_idoc_read(path [, framing, lenient, encoding])` | generic long rows: `document_key, docnum, segnum, segnam, psgnum, hlevel, mandt, sdata` |
+| `sap_idoc_read_control(path [, …])` | the control record — all 36 `EDI_DC40` fields, typed (flat **or** XML) |
+| `sap_idoc_read_segment(path, segnam, dict [, …])` | typed columns for one segment type, sliced from `SDATA` per the dictionary |
+| `sap_idoc_read_raw(path [, …])` | one row per physical record with exact bytes — the byte-exact writer source |
+| `sap_idoc_read_xml(path)` | generic long rows from an IDoc-XML file (self-describing; no dictionary) |
+
+Parameters: `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'` (auto-detected when
+omitted) · `lenient := true` salvages complete records from a truncated file ·
+`encoding` = `'utf-8'` (default) \| `'latin-1'`.
+
+### Writing
+
+```sql
+COPY (<single BLOB/VARCHAR column of raw records>)
+  TO 'file.idoc' (FORMAT sap_idoc [, framing 'fixed'|'lf'|'crlf', validate true]);
+```
+
+Build the records with the pure encoders when composing from scratch:
+
+| Encoder | Produces |
+|---|---|
+| `sap_idoc_encode_sdata(offsets, lengths, values)` | a 1000-byte `SDATA` payload |
+| `sap_idoc_encode_data_record(segnam, mandt, docnum, segnum, psgnum, hlevel, sdata)` | a 1063-byte `EDI_DD40` record |
+| `sap_idoc_encode_control(values)` | a 524-byte `EDI_DC40` control record |
+
+### Converting (flat ⇄ XML)
+
+| Function | Direction |
+|---|---|
+| `sap_idoc_to_xml(flat_path, dict)` | flat → IDoc-XML text |
+| `sap_idoc_xml_to_records(xml_path, dict)` | IDoc-XML → flat records (for `COPY … (FORMAT sap_idoc)`) |
+
+### Dictionary tooling
+
+| Function | Purpose |
+|---|---|
+| `sap_idoc_dict_offsets(src)` | compute field offsets from lengths (author a dict from field order + width) |
+| `sap_idoc_dict_validate(src)` | list structural problems; empty = sound |
+| `sap_idoc_dict_from_fields(fields, idoctyp, cimtyp, release)` | normalize a raw `IDOCTYPE_READ_COMPLETE` field list to the dictionary schema |
+
+Every function is self-documenting — `SELECT * FROM duckdb_functions() WHERE function_name LIKE 'sap_idoc_%'`
+shows a description and an example for each.
+
+---
+
+## 🔤 The segment dictionary
+
+Typed mode needs to know each segment’s field layout (name, offset, length, type). That
+“segment dictionary” is just a **relation** with these columns:
+
+```
+idoctyp, cimtyp, release, segnam, segdef, field_pos, field_name, offset, length, datatype, ...
+```
+
+Its origin is irrelevant to the parser — a file, a table, a view, or a query all work:
+
+- **Offline / hand-authored** — write the fields (order + width) and let
+  `sap_idoc_dict_offsets` compute the offsets; check it with `sap_idoc_dict_validate`.
+- **Online, from a live system** (requires `erpl_rfc` loaded) — the extension ships two
+  SQL macros so it’s a one-liner:
+
+  ```sql
+  LOAD erpl_rfc; LOAD erpl_idoc;
+  CREATE SECRET sap (TYPE sap_rfc, ASHOST '…', SYSNR '00', CLIENT '100', USER '…', PASSWD '…');
+
+  -- fetch + normalize the dictionary for a basic type
+  SELECT * FROM sap_idoc_dictionary(sap_idoc_params('ORDERS05'));
+
+  -- persist once → reuse forever offline (the connected → detached bridge)
+  COPY (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('ORDERS05')))
+       TO 'orders.dict.parquet' (FORMAT parquet);
+  ```
+
+---
+
+## 🔁 Round-trip guarantees
+
+- **Generic:** `sap_idoc_read_raw → COPY (FORMAT sap_idoc)` reproduces the input file
+  **byte-for-byte**.
+- **Flat ⇄ XML:** `flat → xml → flat` (and `xml → flat`) is byte-exact with the dictionary.
+- **System-true:** IDocs written/converted by `erpl_idoc` are accepted by SAP inbound
+  processing (validated end-to-end against a live SAP AS ABAP system, not mocks).
+
+---
+
+## 🔌 Live SAP, cleanly separated
+
+`erpl_idoc` is a **pure, offline file engine** — it links no SAP libraries and makes no
+network calls. When you want a live round trip, you *compose* it with
+[`erpl_rfc`](https://github.com/DataZooDE/erpl) in SQL:
+
+- **Get a dictionary** — `sap_idoc_dictionary(sap_idoc_params('ORDERS05'))` (above).
+- **Import a generated IDoc** — hand the records to an `erpl_rfc` inbound call.
+
+This keeps the file format portable and dependency-free while still giving you the full
+loop when a system is reachable.
+
+---
+
+## 🧭 Scope
+
+**In scope:** flat `EDI_DC40`/`EDI_DD40`, generic + typed read/write, the full control
+record, the segment dictionary (online/offline), both framings, multi-IDoc files,
+lenient/error handling, `latin-1`/UTF-8 decode, and IDoc-XML read/write + flat↔XML
+conversion.
+
+**Not (yet):** `EDIDS` status-record side output, X12/EDIFACT conversion, and
+business-semantic validation (only structural validity is checked).
+
+---
+
+## 🛠️ Build from source
+
+```sh
+git clone --recurse-submodules https://github.com/DataZooDE/erpl-idoc.git
+cd erpl-idoc
+make debug          # or: make release
+make test           # SQL test suite
+```
+
+`tinyxml2` (IDoc-XML) is pulled via vcpkg; set `VCPKG_ROOT` before building.
+
+## 🤝 Contributing
+
+Issues and PRs welcome. The engineering norm here is **TDD with no mocks** — “done”
+means it works end-to-end against a real SAP system, verified by a byte-exact round trip.
+
+## 📄 License
+
+[MIT](LICENSE). Part of the [erpl](https://github.com/DataZooDE/erpl) family by DataZoo.
+
+<sub>[⬆ back to top](#top)</sub>
