@@ -1,6 +1,6 @@
 <a name="top"></a>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.5.4+-green.svg)](https://duckdb.org)
 [![Community Extension](https://img.shields.io/badge/DuckDB-Community%20Extension-informational.svg)](https://duckdb.org/community_extensions/)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
@@ -288,6 +288,9 @@ means it works end-to-end against a real SAP system, verified by a byte-exact ro
 
 ## 📄 License
 
-[MIT](LICENSE). Part of the [erpl](https://github.com/DataZooDE/erpl) family by DataZoo.
+[Business Source License 1.1](LICENSE) (Licensor: DataZoo GmbH; Change License MPL 2.0
+after 5 years) — the same license as the rest of the [erpl](https://github.com/DataZooDE/erpl)
+family. Non-production use is free; production use is granted except offering it to third
+parties on a hosted or embedded basis. Part of the erpl family by DataZoo.
 
 <sub>[⬆ back to top](#top)</sub>
