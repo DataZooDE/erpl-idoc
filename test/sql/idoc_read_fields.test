@@ -1,0 +1,55 @@
+# name: test/sql/idoc_read_fields.test
+# description: sap_idoc_read_fields — decode ALL record fields via a dictionary (long form)
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# every field of the typed segment, in one call, as (segnam, field_name, value)
+query TTT
+SELECT segnam, field_name, value
+FROM sap_idoc_read_fields('test/fixtures/flight.idoc', 'test/fixtures/flight_dict.csv')
+WHERE segnam = 'E1BPSBONEW' AND field_name IN ('AIRLINEID','CONNECTID','FLIGHTDATE','CLASS','PASSNAME')
+ORDER BY field_pos;
+----
+E1BPSBONEW	AIRLINEID	LH
+E1BPSBONEW	CONNECTID	0400
+E1BPSBONEW	FLIGHTDATE	20260715
+E1BPSBONEW	CLASS	Y
+E1BPSBONEW	PASSNAME	MUELLER
+
+# hierarchy/position columns are carried on every field row (raw fixed-width values)
+query TTT
+SELECT DISTINCT segnum, psgnum, hlevel
+FROM sap_idoc_read_fields('test/fixtures/flight.idoc', 'test/fixtures/flight_dict.csv')
+WHERE segnam = 'E1BPSBONEW';
+----
+000002	000001	02
+
+# SYMMETRY: read_fields (filtered + pivoted) == sap_idoc_read_segment for that segment
+query II
+SELECT
+  (SELECT value FROM sap_idoc_read_fields('test/fixtures/flight.idoc','test/fixtures/flight_dict.csv')
+     WHERE segnam='E1BPSBONEW' AND field_name='AIRLINEID')  AS f_airline,
+  (SELECT airlineid FROM sap_idoc_read_segment('test/fixtures/flight.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv'))
+     AS s_airline;
+----
+LH	LH
+
+# every control-free record with a dictionary entry contributes its fields; the
+# flight IDoc has 2 data records (E1SBO_CRE has no fields, E1BPSBONEW has many)
+query I
+SELECT count(*) > 0
+FROM sap_idoc_read_fields('test/fixtures/flight.idoc', 'test/fixtures/flight_dict.csv');
+----
+true
+
+# dictionary works as a view too (dictionary-as-data, FR-D3)
+statement ok
+CREATE VIEW fdict AS SELECT * FROM read_csv('test/fixtures/flight_dict.csv');
+
+query TT
+SELECT field_name, value
+FROM sap_idoc_read_fields('test/fixtures/flight.idoc', 'fdict')
+WHERE segnam = 'E1BPSBONEW' AND field_name = 'FLIGHTDATE';
+----
+FLIGHTDATE	20260715
