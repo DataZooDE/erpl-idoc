@@ -57,3 +57,14 @@ core_tests:
 .PHONY: e2e
 e2e: debug
 	@for s in test/e2e/m*.sh; do echo "== $$s =="; bash "$$s" || exit 1; done
+
+# Mass-produce a corpus of standard IDoc types from the live A4H system (via erpl-adt)
+# for performance/compatibility testing. Choose the output format with FORMAT and the
+# volume with REPEAT, e.g.:
+#   make corpus                          # flat IDocs of the default standard types
+#   make corpus FORMAT=xml               # IDoc-XML instead
+#   make corpus FORMAT=both REPEAT=1000  # both, plus large multi-IDoc volume files
+.PHONY: corpus
+corpus: debug
+	@FORMAT=$(or $(FORMAT),flat) REPEAT=$(or $(REPEAT),1) MIXED=$(or $(MIXED),0) \
+		bash scripts/gen_idoc_corpus.sh $(or $(OUT_DIR),corpus)

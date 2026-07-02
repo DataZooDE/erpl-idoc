@@ -32,3 +32,6 @@ test/python/__pycache__/
 *secret*.json
 !*_secret.cpp
 !*_secret.hpp
+
+# Generated IDoc corpus (perf/compat fixtures; regenerate via scripts/gen_idoc_corpus.sh)
+corpus/
