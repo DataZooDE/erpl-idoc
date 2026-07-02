@@ -15,6 +15,10 @@ new IDocs from a query, and convert flat ⇄ XML — all in plain SQL, all offli
 document/EDI layer of the **erpl** SAP family (`erpl_rfc`, `erpl_odp`, `erpl_bics`), and
 composes with `erpl_rfc` when you want live-SAP round trips.
 
+<p align="center">
+  <img src="assets/erpl_idoc_demo.gif" alt="erpl_idoc demo: read an IDoc file, decode SDATA into typed columns, write a byte-exact IDoc back, and convert flat to IDoc-XML — all in DuckDB SQL" width="820">
+</p>
+
 > SEO topics: DuckDB SAP IDoc, read IDoc file SQL, parse EDI_DC40 EDI_DD40, IDoc flat file
 > to table, IDoc XML to flat, generate IDoc from SQL, SAP ALE EDI DuckDB, decode SDATA,
 > segment dictionary WE60, IDOCTYPE_READ_COMPLETE, IDoc round trip.
