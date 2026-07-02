@@ -166,9 +166,19 @@ SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sou
 | `sap_idoc_read_raw(path [, …])` | one row per physical record with exact bytes — the byte-exact writer source |
 | `sap_idoc_read_xml(path)` | generic long rows from an IDoc-XML file (self-describing; no dictionary) |
 
-Parameters: `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'` (auto-detected when
-omitted) · `lenient := true` salvages complete records from a truncated file ·
-`encoding` = `'utf-8'` (default) \| `'latin-1'`. `sap_idoc_read_fields` also takes
+Every reader accepts a **single path or a glob**, resolved through DuckDB's virtual
+filesystem — so a whole directory works, including remote stores (`s3://…`, `http(s)://…`,
+`gs://…`) once the matching extension is loaded (`INSTALL httpfs; LOAD httpfs;`) and a
+`CREATE SECRET` is set for credentials:
+
+```sql
+SELECT filename, idoctyp FROM sap_idoc_read_control('s3://bucket/idocs/*.idoc', filename=true);
+```
+
+Parameters (all readers): `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'`
+(auto-detected when omitted) · `lenient := true` salvages complete records from a
+truncated file · `encoding` = `'utf-8'` (default) \| `'latin-1'` · `filename := true`
+adds a source-file column (handy across a glob). `sap_idoc_read_fields` also takes
 `include_unknown := false` to drop segments absent from the dictionary (default keeps
 them as one row with the raw trimmed `SDATA`).
 
