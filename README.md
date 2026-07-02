@@ -162,12 +162,21 @@ SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sou
 | `sap_idoc_read(path [, framing, lenient, encoding])` | generic long rows: `document_key, docnum, segnum, segnam, psgnum, hlevel, mandt, sdata` |
 | `sap_idoc_read_control(path [, …])` | the control record — all 36 `EDI_DC40` fields, typed (flat **or** XML) |
 | `sap_idoc_read_segment(path, segnam, dict [, …])` | typed columns for one segment type, sliced from `SDATA` per the dictionary |
+| `sap_idoc_read_fields(path, dict [, …])` | **every field of every record** in one call — long rows: `document_key, segnum, psgnum, hlevel, segnam, field_pos, field_name, datatype, value` |
 | `sap_idoc_read_raw(path [, …])` | one row per physical record with exact bytes — the byte-exact writer source |
 | `sap_idoc_read_xml(path)` | generic long rows from an IDoc-XML file (self-describing; no dictionary) |
 
 Parameters: `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'` (auto-detected when
 omitted) · `lenient := true` salvages complete records from a truncated file ·
-`encoding` = `'utf-8'` (default) \| `'latin-1'`.
+`encoding` = `'utf-8'` (default) \| `'latin-1'`. `sap_idoc_read_fields` also takes
+`include_unknown := false` to drop segments absent from the dictionary (default keeps
+them as one row with the raw trimmed `SDATA`).
+
+```sql
+-- Decode a whole IDoc — all segments, all fields — in one call:
+SELECT segnam, field_name, value
+FROM sap_idoc_read_fields('order.idoc', 'order_dict.csv');
+```
 
 ### Writing
 
