@@ -7,6 +7,7 @@
 #include "idoc_format.hpp"
 #include "idoc_dict_source.hpp"
 #include "idoc_doc.hpp"
+#include "telemetry.hpp"
 
 #include <algorithm>
 #include <set>
@@ -93,6 +94,7 @@ static unique_ptr<FunctionData> DictSourceBind(ClientContext &, TableFunctionBin
 }
 static unique_ptr<FunctionData> OffsetsBind(ClientContext &c, TableFunctionBindInput &input,
                                             vector<LogicalType> &rt, vector<string> &n) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_dict_offsets");
 	return DictSourceBind(c, input, rt, n, false);
 }
 
@@ -173,6 +175,7 @@ struct ValidateGlobalState : public GlobalTableFunctionState {
 };
 static unique_ptr<FunctionData> ValidateBind(ClientContext &c, TableFunctionBindInput &input, vector<LogicalType> &rt,
                                              vector<string> &n) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_dict_validate");
 	return DictSourceBind(c, input, rt, n, true);
 }
 static unique_ptr<GlobalTableFunctionState> ValidateInit(ClientContext &context, TableFunctionInitInput &input) {

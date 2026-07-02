@@ -5,6 +5,7 @@
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
 #include "idoc_doc.hpp"
+#include "telemetry.hpp"
 #include "idoc_xml.hpp"
 
 namespace duckdb {
@@ -150,6 +151,7 @@ static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFuncti
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(input, *bind);
 	bind->kind = ReaderKind::DATA;
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read");
 
 	names = {"document_key", "docnum", "segnum", "segnam", "psgnum", "hlevel", "mandt", "sdata"};
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -190,6 +192,7 @@ static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, Tabl
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(input, *bind);
 	bind->kind = ReaderKind::CONTROL;
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_control");
 
 	names.push_back("document_key");
 	return_types.push_back(LogicalType::BIGINT);
@@ -233,6 +236,7 @@ static unique_ptr<FunctionData> ReadIdocRawBind(ClientContext &context, TableFun
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(input, *bind);
 	bind->kind = ReaderKind::RAW;
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_raw");
 
 	names = {"document_key", "record_index", "record_type", "raw_record"};
 	return_types = {LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::BLOB};

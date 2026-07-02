@@ -8,6 +8,7 @@
 #include "idoc_format.hpp"
 #include "idoc_dict_source.hpp"
 #include "idoc_doc.hpp"
+#include "telemetry.hpp"
 
 #include <cctype>
 
@@ -70,6 +71,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	bind->path = input.inputs[0].GetValue<string>();
 	bind->segnam = input.inputs[1].GetValue<string>();
 	auto dict = input.inputs[2].GetValue<string>();
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_segment");
 
 	auto &np = input.named_parameters;
 	if (np.count("framing") && !np["framing"].IsNull()) {

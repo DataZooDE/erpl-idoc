@@ -9,6 +9,7 @@
 #include "idoc_format.hpp"
 #include "idoc_dict_source.hpp"
 #include "idoc_doc.hpp"
+#include "telemetry.hpp"
 #include "idoc_xml.hpp"
 
 #include <map>
@@ -91,6 +92,7 @@ static unique_ptr<FunctionData> ReadXmlBind(ClientContext &, TableFunctionBindIn
                                             vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<XmlPathBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_xml");
 	names = {"document_key", "seq", "segnam", "hlevel", "field_name", "value"};
 	return_types = {LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::VARCHAR,
 	                LogicalType::INTEGER, LogicalType::VARCHAR, LogicalType::VARCHAR};
@@ -157,6 +159,7 @@ static unique_ptr<FunctionData> ToXmlBind(ClientContext &, TableFunctionBindInpu
 	auto bind = make_uniq<FlatDictBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
 	bind->dict = input.inputs[1].GetValue<string>();
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_to_xml");
 	names = {"xml"};
 	return_types = {LogicalType::VARCHAR};
 	return std::move(bind);
@@ -235,6 +238,7 @@ static unique_ptr<FunctionData> XmlToRecBind(ClientContext &, TableFunctionBindI
 	auto bind = make_uniq<FlatDictBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
 	bind->dict = input.inputs[1].GetValue<string>();
+	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_xml_to_records");
 	names = {"document_key", "record_index", "record_type", "raw_record"};
 	return_types = {LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::BLOB};
 	return std::move(bind);

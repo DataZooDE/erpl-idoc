@@ -286,6 +286,21 @@ make test           # SQL test suite
 Issues and PRs welcome. The engineering norm here is **TDD with no mocks** — “done”
 means it works end-to-end against a real SAP system, verified by a byte-exact round trip.
 
+## 🔐 Telemetry
+
+`erpl_idoc` collects **anonymous, opt-out** usage telemetry (extension/DuckDB version,
+OS/arch, and which functions are invoked) so we know what to keep working. **No IDoc
+content, file paths, connection details, or personal data are ever collected.** Disable
+it at any time:
+
+```sql
+SET erpl_telemetry_enabled = FALSE;   -- turn telemetry off
+SET erpl_telemetry_key = 'your-key';  -- or point it at your own PostHog project
+```
+
+Same mechanism as the rest of the [erpl](https://github.com/DataZooDE/erpl) family —
+see [erpl.io/telemetry](https://erpl.io/telemetry) for details.
+
 ## 📄 License
 
 [Business Source License 1.1](LICENSE) (Licensor: DataZoo GmbH; Change License MPL 2.0

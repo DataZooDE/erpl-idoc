@@ -1,5 +1,6 @@
 {
 	"dependencies": [
-		"tinyxml2"
+		"tinyxml2",
+		"openssl"
 	]
 }

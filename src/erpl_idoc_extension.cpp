@@ -6,9 +6,31 @@
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/database.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
+#include "telemetry.hpp"
+
 namespace duckdb {
+
+// Default (public) PostHog project key, shared with the rest of the erpl family.
+static const char *ERPL_TELEMETRY_KEY = "phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t";
+
+static void OnTelemetryEnabled(ClientContext &, SetScope, Value &parameter) {
+	PostHogTelemetry::Instance().SetEnabled(parameter.GetValue<bool>());
+}
+static void OnTelemetryKey(ClientContext &, SetScope, Value &parameter) {
+	PostHogTelemetry::Instance().SetAPIKey(parameter.GetValue<std::string>());
+}
+
+static void RegisterConfiguration(DatabaseInstance &instance) {
+	auto &config = DBConfig::GetConfig(instance);
+	config.AddExtensionOption("erpl_telemetry_enabled",
+	                          "Enable anonymous ERPL telemetry (opt-out); see https://erpl.io/telemetry.",
+	                          LogicalTypeId::BOOLEAN, Value(true), OnTelemetryEnabled);
+	config.AddExtensionOption("erpl_telemetry_key", "PostHog project key for ERPL telemetry.",
+	                          LogicalTypeId::VARCHAR, Value(ERPL_TELEMETRY_KEY), OnTelemetryKey);
+}
 
 // Minimal M0 smoke function: proves the extension loads and registers.
 // Real IDoc reader/writer/COPY functions are registered in later milestones.
@@ -22,6 +44,11 @@ inline void IdocVersionScalarFun(DataChunk &args, ExpressionState &state, Vector
 static void LoadInternal(ExtensionLoader &loader) {
 	loader.SetDescription("SAP IDoc flat-file reader and writer for DuckDB — read IDoc files as tables and "
 	                      "emit byte-valid IDoc files from SQL. Offline core; live-SAP access via erpl_rfc.");
+
+	// Anonymous, opt-out telemetry (SET erpl_telemetry_enabled=false to disable).
+	PostHogTelemetry::Instance().SetAPIKey(ERPL_TELEMETRY_KEY);
+	PostHogTelemetry::Instance().CaptureExtensionLoad("erpl_idoc", "0.1.0");
+	RegisterConfiguration(loader.GetDatabaseInstance());
 
 	RegisterDocScalarFunction(
 	    loader, ScalarFunction("sap_idoc_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, IdocVersionScalarFun),
