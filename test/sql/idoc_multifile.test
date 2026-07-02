@@ -51,6 +51,26 @@ SELECT count(*) FROM sap_idoc_read_segment('__TEST_DIR__/mf_*.idoc', 'E1BPSBONEW
 ----
 2
 
+# an explicit LIST of paths is also accepted (readers + typed readers)
+query I
+SELECT count(DISTINCT filename)
+FROM sap_idoc_read(['__TEST_DIR__/mf_a.idoc', '__TEST_DIR__/mf_b.idoc'], filename=true);
+----
+2
+
+query I
+SELECT count(*)
+FROM sap_idoc_read_fields(['__TEST_DIR__/mf_a.idoc', '__TEST_DIR__/mf_b.idoc'], 'test/fixtures/flight_dict.csv')
+WHERE segnam='E1BPSBONEW' AND field_name='AIRLINEID' AND value='LH';
+----
+2
+
+query I
+SELECT count(*)
+FROM sap_idoc_read_segment(['__TEST_DIR__/mf_a.idoc', '__TEST_DIR__/mf_b.idoc'], 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
+----
+2
+
 # a glob that matches nothing is a clear error
 statement error
 SELECT * FROM sap_idoc_read('__TEST_DIR__/nope_*.idoc');

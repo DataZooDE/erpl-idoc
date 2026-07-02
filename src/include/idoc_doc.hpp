@@ -22,6 +22,23 @@ inline void RegisterDocTableFunction(ExtensionLoader &loader, TableFunction fun,
 	loader.RegisterFunction(std::move(info));
 }
 
+// Same, for an overload set (e.g. a reader that accepts either a VARCHAR path/glob or
+// a LIST(VARCHAR) of paths). The description is attached to every overload.
+inline void RegisterDocTableFunctionSet(ExtensionLoader &loader, TableFunctionSet set, string description,
+                                        vector<string> examples, vector<string> parameter_names = {}) {
+	auto n = set.functions.size();
+	CreateTableFunctionInfo info(std::move(set));
+	for (idx_t i = 0; i < n; i++) {
+		FunctionDescription d;
+		d.description = description;
+		d.examples = examples;
+		d.categories = {"sap", "idoc"};
+		d.parameter_names = parameter_names;
+		info.descriptions.push_back(std::move(d));
+	}
+	loader.RegisterFunction(std::move(info));
+}
+
 inline void RegisterDocScalarFunction(ExtensionLoader &loader, ScalarFunction fun, string description,
                                       vector<string> examples, vector<string> parameter_names = {}) {
 	CreateScalarFunctionInfo info(std::move(fun));
