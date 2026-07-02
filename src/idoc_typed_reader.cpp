@@ -1,12 +1,11 @@
 #include "duckdb.hpp"
-#include "duckdb/common/file_system.hpp"
-#include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
 #include "idoc_dict_source.hpp"
+#include "idoc_multifile.hpp"
 #include "idoc_doc.hpp"
 #include "telemetry.hpp"
 
@@ -21,25 +20,6 @@ using erpl_idoc::GetFieldRaw;
 using erpl_idoc::ParsedIdoc;
 using erpl_idoc::RTrim;
 
-// Shared file read (kept local to avoid cross-TU coupling).
-static std::string TypedReadWholeFile(ClientContext &context, const std::string &path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-	auto size = static_cast<idx_t>(handle->GetFileSize());
-	std::string buffer;
-	buffer.resize(size);
-	idx_t total = 0;
-	while (total < size) {
-		auto n = handle->Read(reinterpret_cast<void *>(&buffer[total]), size - total);
-		if (n <= 0) {
-			throw IOException("short read on '%s': got %llu of %llu bytes", path, (unsigned long long)total,
-			                  (unsigned long long)size);
-		}
-		total += static_cast<idx_t>(n);
-	}
-	return buffer;
-}
-
 // One field's slicing rule taken from the dictionary.
 struct TypedFieldRule {
 	std::string name;
@@ -50,27 +30,20 @@ struct TypedFieldRule {
 };
 
 struct ReadSegmentBindData : public TableFunctionData {
-	std::string path;
+	vector<std::string> files;
 	std::string segnam;
 	bool has_framing_override = false;
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
+	bool with_filename = false;
 	std::string encoding = "utf-8";
 	vector<TypedFieldRule> fields;
-};
-
-struct ReadSegmentGlobalState : public GlobalTableFunctionState {
-	ParsedIdoc parsed;
-	idx_t cursor = 0;
-	idx_t MaxThreads() const override {
-		return 1;
-	}
 };
 
 static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<ReadSegmentBindData>();
-	bind->path = input.inputs[0].GetValue<string>();
+	bind->files = IdocResolvePaths(context, input.inputs[0]);
 	bind->segnam = input.inputs[1].GetValue<string>();
 	auto dict = input.inputs[2].GetValue<string>();
 	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_segment");
@@ -85,6 +58,9 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	}
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
 		bind->encoding = np["encoding"].GetValue<string>();
+	}
+	if (np.count("filename") && !np["filename"].IsNull()) {
+		bind->with_filename = np["filename"].GetValue<bool>();
 	}
 
 	// Load the slicing rules for this segment from the dictionary relation.
@@ -121,30 +97,26 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		return_types.push_back(LogicalType::VARCHAR); // typed values as strings (acceptance #3)
 		bind->fields.push_back(std::move(rule));
 	}
+	if (bind->with_filename) {
+		names.push_back("filename");
+		return_types.push_back(LogicalType::VARCHAR);
+	}
 	return std::move(bind);
 }
 
 static unique_ptr<GlobalTableFunctionState> ReadSegmentInitGlobal(ClientContext &context,
                                                                   TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<ReadSegmentBindData>();
-	auto data = TypedReadWholeFile(context, bind.path);
-	auto state = make_uniq<ReadSegmentGlobalState>();
-	if (bind.lenient) {
-		state->parsed = erpl_idoc::ParseImageLenient(data);
-	} else {
-		auto framing = bind.has_framing_override ? bind.framing_override : erpl_idoc::DetectFraming(data);
-		state->parsed = erpl_idoc::ParseImage(data, framing);
-	}
-	return std::move(state);
+	return MakeIdocScanState(bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
+	                         /*allow_xml_control=*/false);
 }
 
 static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<ReadSegmentBindData>();
-	auto &gstate = data_p.global_state->Cast<ReadSegmentGlobalState>();
-	auto &records = gstate.parsed.records;
+	auto &st = data_p.global_state->Cast<IdocScanState>();
 	idx_t out_row = 0;
-	while (gstate.cursor < records.size() && out_row < STANDARD_VECTOR_SIZE) {
-		auto &rec = records[gstate.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
+		auto &rec = st.parsed.records[st.cursor++];
 		if (rec.is_control) {
 			continue;
 		}
@@ -160,6 +132,9 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 			// decode per the source codepage, then trim trailing pad spaces
 			output.SetValue(2 + i, out_row, Value(RTrim(erpl_idoc::DecodeText(raw, bind.encoding))));
 		}
+		if (bind.with_filename) {
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+		}
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -170,28 +145,20 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 // as sap_idoc_read_segment, but across every segment at once and without per-segment
 // calls or manual offset math.
 struct ReadFieldsBindData : public TableFunctionData {
-	std::string path;
+	vector<std::string> files;
 	bool has_framing_override = false;
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
 	bool include_unknown = true;
+	bool with_filename = false;
 	std::string encoding = "utf-8";
 	std::map<std::string, vector<TypedFieldRule>> fields_by_seg;
-};
-
-struct ReadFieldsGlobalState : public GlobalTableFunctionState {
-	ParsedIdoc parsed;
-	idx_t cursor = 0;       // record index
-	idx_t field_cursor = 0; // field index within the current record (spans chunks)
-	idx_t MaxThreads() const override {
-		return 1;
-	}
 };
 
 static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunctionBindInput &input,
                                                vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<ReadFieldsBindData>();
-	bind->path = input.inputs[0].GetValue<string>();
+	bind->files = IdocResolvePaths(context, input.inputs[0]);
 	auto dict = input.inputs[1].GetValue<string>();
 	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_fields");
 
@@ -208,6 +175,9 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 	}
 	if (np.count("include_unknown") && !np["include_unknown"].IsNull()) {
 		bind->include_unknown = np["include_unknown"].GetValue<bool>();
+	}
+	if (np.count("filename") && !np["filename"].IsNull()) {
+		bind->with_filename = np["filename"].GetValue<bool>();
 	}
 
 	// Load slicing rules for ALL segments once, grouped by segment name.
@@ -239,41 +209,37 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::INTEGER,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+	if (bind->with_filename) {
+		names.push_back("filename");
+		return_types.push_back(LogicalType::VARCHAR);
+	}
 	return std::move(bind);
 }
 
 static unique_ptr<GlobalTableFunctionState> ReadFieldsInitGlobal(ClientContext &context,
                                                                  TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<ReadFieldsBindData>();
-	auto data = TypedReadWholeFile(context, bind.path);
-	auto state = make_uniq<ReadFieldsGlobalState>();
-	if (bind.lenient) {
-		state->parsed = erpl_idoc::ParseImageLenient(data);
-	} else {
-		auto framing = bind.has_framing_override ? bind.framing_override : erpl_idoc::DetectFraming(data);
-		state->parsed = erpl_idoc::ParseImage(data, framing);
-	}
-	return std::move(state);
+	return MakeIdocScanState(bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
+	                         /*allow_xml_control=*/false);
 }
 
 static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<ReadFieldsBindData>();
-	auto &g = data_p.global_state->Cast<ReadFieldsGlobalState>();
-	auto &records = g.parsed.records;
+	auto &st = data_p.global_state->Cast<IdocScanState>();
 	idx_t out_row = 0;
-	while (g.cursor < records.size() && out_row < STANDARD_VECTOR_SIZE) {
-		auto &rec = records[g.cursor];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
+		auto &rec = st.parsed.records[st.cursor];
 		if (rec.is_control) {
-			g.cursor++;
-			g.field_cursor = 0;
+			st.cursor++;
+			st.field_cursor = 0;
 			continue;
 		}
 		auto segnam = RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[0]));
 		auto it = bind.fields_by_seg.find(segnam);
 		bool known = (it != bind.fields_by_seg.end());
 		if (!known && !bind.include_unknown) {
-			g.cursor++;
-			g.field_cursor = 0;
+			st.cursor++;
+			st.field_cursor = 0;
 			continue;
 		}
 		auto sdata = GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]);  // SDATA(1000)
@@ -281,14 +247,14 @@ static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, D
 		auto psgnum = RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[4]));
 		auto hlevel = RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[5]));
 		idx_t nfields = known ? it->second.size() : 1;
-		while (g.field_cursor < nfields && out_row < STANDARD_VECTOR_SIZE) {
+		while (st.field_cursor < nfields && out_row < STANDARD_VECTOR_SIZE) {
 			output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 			output.SetValue(1, out_row, Value(segnum));
 			output.SetValue(2, out_row, Value(psgnum));
 			output.SetValue(3, out_row, Value(hlevel));
 			output.SetValue(4, out_row, Value(segnam));
 			if (known) {
-				auto &f = it->second[g.field_cursor];
+				auto &f = it->second[st.field_cursor];
 				output.SetValue(5, out_row, Value::INTEGER(static_cast<int32_t>(f.field_pos)));
 				output.SetValue(6, out_row, Value(f.name));
 				output.SetValue(7, out_row, f.datatype.empty() ? Value(LogicalType::VARCHAR) : Value(f.datatype));
@@ -301,12 +267,15 @@ static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, D
 				output.SetValue(7, out_row, Value(LogicalType::VARCHAR));
 				output.SetValue(8, out_row, Value(RTrim(erpl_idoc::DecodeText(sdata, bind.encoding))));
 			}
-			g.field_cursor++;
+			if (bind.with_filename) {
+				output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+			}
+			st.field_cursor++;
 			out_row++;
 		}
-		if (g.field_cursor >= nfields) {
-			g.cursor++;
-			g.field_cursor = 0;
+		if (st.field_cursor >= nfields) {
+			st.cursor++;
+			st.field_cursor = 0;
 		}
 	}
 	output.SetCardinality(out_row);
@@ -318,6 +287,7 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 	f.named_parameters["framing"] = LogicalType::VARCHAR;
 	f.named_parameters["lenient"] = LogicalType::BOOLEAN;
 	f.named_parameters["encoding"] = LogicalType::VARCHAR;
+	f.named_parameters["filename"] = LogicalType::BOOLEAN;
 	RegisterDocTableFunction(
 	    loader, std::move(f),
 	    "Typed read of one IDoc segment type: split each segment's SDATA into named, typed columns using a "
@@ -334,6 +304,7 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 	ff.named_parameters["lenient"] = LogicalType::BOOLEAN;
 	ff.named_parameters["encoding"] = LogicalType::VARCHAR;
 	ff.named_parameters["include_unknown"] = LogicalType::BOOLEAN;
+	ff.named_parameters["filename"] = LogicalType::BOOLEAN;
 	RegisterDocTableFunction(
 	    loader, std::move(ff),
 	    "Decode ALL fields of every record in an IDoc using a segment dictionary — one call, long form: one row "

@@ -1,134 +1,35 @@
 #include "duckdb.hpp"
-#include "duckdb/common/file_system.hpp"
-#include "duckdb/common/file_open_flags.hpp"
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
+#include "idoc_multifile.hpp"
 #include "idoc_doc.hpp"
 #include "telemetry.hpp"
-#include "idoc_xml.hpp"
 
 namespace duckdb {
-
-// Is this file image IDoc-XML (first non-whitespace byte is '<')?
-static bool LooksLikeXml(const std::string &data) {
-	for (char c : data) {
-		if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || (unsigned char)c == 0xEF || (unsigned char)c == 0xBB ||
-		    (unsigned char)c == 0xBF) {
-			continue; // skip whitespace / UTF-8 BOM
-		}
-		return c == '<';
-	}
-	return false;
-}
 
 using erpl_idoc::EDI_DC40_FIELDS;
 using erpl_idoc::EDI_DD40_FIELDS;
 using erpl_idoc::Framing;
 using erpl_idoc::GetFieldRaw;
-using erpl_idoc::ParsedIdoc;
 using erpl_idoc::RTrim;
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-// Read a whole file through DuckDB's virtual filesystem (works with local paths,
-// globs resolved by the caller, httpfs, etc.).
-static std::string ReadWholeFile(ClientContext &context, const std::string &path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-	auto size = static_cast<idx_t>(handle->GetFileSize());
-	std::string buffer;
-	buffer.resize(size);
-	idx_t read_total = 0;
-	while (read_total < size) {
-		auto n = handle->Read(reinterpret_cast<void *>(&buffer[read_total]), size - read_total);
-		if (n <= 0) {
-			// A short read means the reported size was wrong or the file was truncated
-			// mid-stream; parsing the shortened buffer would silently mislead.
-			throw IOException("short read on '%s': got %llu of %llu bytes", path, (unsigned long long)read_total,
-			                  (unsigned long long)size);
-		}
-		read_total += static_cast<idx_t>(n);
-	}
-	return buffer;
-}
 
 enum class ReaderKind { DATA, CONTROL, RAW };
 
-// Bind data shared by all three readers: the file path and an optional framing override.
+// Bind data shared by all three readers: the resolved file list + options.
 struct IdocReadBindData : public TableFunctionData {
-	std::string path;
+	vector<std::string> files;
 	bool has_framing_override = false;
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
+	bool with_filename = false;
 	std::string encoding = "utf-8";
 	ReaderKind kind = ReaderKind::DATA;
 };
 
-// Build a control-only ParsedIdoc from an IDoc-XML image (no dictionary needed):
-// each <IDOC>'s EDI_DC40 fields are re-encoded into a synthetic 524-byte control
-// record so the normal control scan can emit them.
-static erpl_idoc::ParsedIdoc ParseXmlControl(const std::string &xml) {
-	erpl_idoc::ParsedIdoc parsed;
-	parsed.framing = Framing::FIXED;
-	auto idocs = erpl_idoc::ParseIdocXml(xml);
-	int64_t dk = 0, idx = 0;
-	for (auto &idoc : idocs) {
-		dk++;
-		std::vector<std::string> vals;
-		for (auto &f : erpl_idoc::EDI_DC40_FIELDS) {
-			vals.push_back(erpl_idoc::XmlFieldValue(idoc.control, f.name));
-		}
-		parsed.records.push_back(erpl_idoc::IdocRecord{dk, idx++, true, erpl_idoc::EncodeControl(vals)});
-	}
-	return parsed;
-}
-
-// Global state: parse the whole file once, then stream rows out in chunks.
-struct IdocReadGlobalState : public GlobalTableFunctionState {
-	ParsedIdoc parsed;
-	idx_t cursor = 0; // index into `parsed.records`
-	idx_t MaxThreads() const override {
-		return 1;
-	}
-};
-
-static Framing resolve_framing(const std::string &data, const IdocReadBindData &bind) {
-	if (bind.has_framing_override) {
-		return bind.framing_override;
-	}
-	return erpl_idoc::DetectFraming(data);
-}
-
-static unique_ptr<GlobalTableFunctionState> IdocInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
-	auto &bind = input.bind_data->Cast<IdocReadBindData>();
-	auto data = ReadWholeFile(context, bind.path);
-	auto state = make_uniq<IdocReadGlobalState>();
-	if (LooksLikeXml(data)) {
-		// IDoc-XML: control is self-describing (no dict); data records would need the
-		// dictionary to pack SDATA, so direct the user to the XML-native functions.
-		if (bind.kind != ReaderKind::CONTROL) {
-			throw InvalidInputException(
-			    "'%s' is IDoc-XML: use sap_idoc_read_xml(...), or convert to flat with "
-			    "sap_idoc_xml_to_records(...); sap_idoc_read/_raw operate on the flat form.",
-			    bind.path);
-		}
-		state->parsed = ParseXmlControl(data);
-		return std::move(state);
-	}
-	if (bind.lenient) {
-		state->parsed = erpl_idoc::ParseImageLenient(data);
-	} else {
-		state->parsed = erpl_idoc::ParseImage(data, resolve_framing(data, bind));
-	}
-	return std::move(state);
-}
-
-// Common bind: (VARCHAR path) + named params framing / lenient / encoding.
-static void ParseCommonBindArgs(TableFunctionBindInput &input, IdocReadBindData &bind) {
-	bind.path = input.inputs[0].GetValue<string>();
+// Common bind: (VARCHAR path/glob or LIST(VARCHAR)) + named params.
+static void ParseCommonBindArgs(ClientContext &context, TableFunctionBindInput &input, IdocReadBindData &bind) {
+	bind.files = IdocResolvePaths(context, input.inputs[0]);
 	auto &np = input.named_parameters;
 	if (np.count("framing") && !np["framing"].IsNull()) {
 		bind.has_framing_override = true;
@@ -140,6 +41,25 @@ static void ParseCommonBindArgs(TableFunctionBindInput &input, IdocReadBindData 
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
 		bind.encoding = np["encoding"].GetValue<string>();
 	}
+	if (np.count("filename") && !np["filename"].IsNull()) {
+		bind.with_filename = np["filename"].GetValue<bool>();
+	}
+}
+
+static void MaybeAddFilenameColumn(const IdocReadBindData &bind, vector<LogicalType> &return_types,
+                                   vector<string> &names) {
+	if (bind.with_filename) {
+		names.push_back("filename");
+		return_types.push_back(LogicalType::VARCHAR);
+	}
+}
+
+// Init: build the shared lazy multi-file scan state. Only the control reader may parse
+// IDoc-XML (its records are self-describing); data/raw operate on the flat form.
+static unique_ptr<GlobalTableFunctionState> IdocInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind = input.bind_data->Cast<IdocReadBindData>();
+	return MakeIdocScanState(bind.files, bind.lenient, bind.has_framing_override, bind.framing_override,
+	                         bind.kind == ReaderKind::CONTROL);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,23 +69,23 @@ static void ParseCommonBindArgs(TableFunctionBindInput &input, IdocReadBindData 
 static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFunctionBindInput &input,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<IdocReadBindData>();
-	ParseCommonBindArgs(input, *bind);
+	ParseCommonBindArgs(context, input, *bind);
 	bind->kind = ReaderKind::DATA;
 	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read");
 
 	names = {"document_key", "docnum", "segnum", "segnam", "psgnum", "hlevel", "mandt", "sdata"};
 	return_types = {LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+	MaybeAddFilenameColumn(*bind, return_types, names);
 	return std::move(bind);
 }
 
 static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
-	auto &gstate = data_p.global_state->Cast<IdocReadGlobalState>();
-	auto &records = gstate.parsed.records;
+	auto &st = data_p.global_state->Cast<IdocScanState>();
 	idx_t out_row = 0;
-	while (gstate.cursor < records.size() && out_row < STANDARD_VECTOR_SIZE) {
-		auto &rec = records[gstate.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
+		auto &rec = st.parsed.records[st.cursor++];
 		if (rec.is_control) {
 			continue; // sap_idoc_read only surfaces data records
 		}
@@ -176,8 +96,11 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 		output.SetValue(4, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[4])))); // PSGNUM
 		output.SetValue(5, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[5])))); // HLEVEL
 		output.SetValue(6, out_row, Value(RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[1])))); // MANDT
-		// SDATA (raw 1000), decoded per the source codepage (default UTF-8 pass-through)
-		output.SetValue(7, out_row, Value(erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]), bind.encoding)));
+		output.SetValue(7, out_row,
+		                Value(erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[6]), bind.encoding)));
+		if (bind.with_filename) {
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+		}
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -190,7 +113,7 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<IdocReadBindData>();
-	ParseCommonBindArgs(input, *bind);
+	ParseCommonBindArgs(context, input, *bind);
 	bind->kind = ReaderKind::CONTROL;
 	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_control");
 
@@ -204,16 +127,16 @@ static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, Tabl
 		names.push_back(lower);
 		return_types.push_back(LogicalType::VARCHAR);
 	}
+	MaybeAddFilenameColumn(*bind, return_types, names);
 	return std::move(bind);
 }
 
 static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
-	auto &gstate = data_p.global_state->Cast<IdocReadGlobalState>();
-	auto &records = gstate.parsed.records;
+	auto &st = data_p.global_state->Cast<IdocScanState>();
 	idx_t out_row = 0;
-	while (gstate.cursor < records.size() && out_row < STANDARD_VECTOR_SIZE) {
-		auto &rec = records[gstate.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
+		auto &rec = st.parsed.records[st.cursor++];
 		if (!rec.is_control) {
 			continue;
 		}
@@ -221,6 +144,9 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 		for (idx_t i = 0; i < EDI_DC40_FIELDS.size(); i++) {
 			auto raw = erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]), bind.encoding);
 			output.SetValue(1 + i, out_row, Value(RTrim(raw)));
+		}
+		if (bind.with_filename) {
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
 		}
 		out_row++;
 	}
@@ -234,25 +160,29 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 static unique_ptr<FunctionData> ReadIdocRawBind(ClientContext &context, TableFunctionBindInput &input,
                                                 vector<LogicalType> &return_types, vector<string> &names) {
 	auto bind = make_uniq<IdocReadBindData>();
-	ParseCommonBindArgs(input, *bind);
+	ParseCommonBindArgs(context, input, *bind);
 	bind->kind = ReaderKind::RAW;
 	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_raw");
 
 	names = {"document_key", "record_index", "record_type", "raw_record"};
 	return_types = {LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::BLOB};
+	MaybeAddFilenameColumn(*bind, return_types, names);
 	return std::move(bind);
 }
 
 static void ReadIdocRawScan(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &gstate = data_p.global_state->Cast<IdocReadGlobalState>();
-	auto &records = gstate.parsed.records;
+	auto &bind = data_p.bind_data->Cast<IdocReadBindData>();
+	auto &st = data_p.global_state->Cast<IdocScanState>();
 	idx_t out_row = 0;
-	while (gstate.cursor < records.size() && out_row < STANDARD_VECTOR_SIZE) {
-		auto &rec = records[gstate.cursor++];
+	while (out_row < STANDARD_VECTOR_SIZE && IdocAdvance(context, st)) {
+		auto &rec = st.parsed.records[st.cursor++];
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
 		output.SetValue(1, out_row, Value::BIGINT(rec.record_index));
 		output.SetValue(2, out_row, Value(rec.is_control ? "C" : "D"));
 		output.SetValue(3, out_row, Value::BLOB_RAW(rec.bytes));
+		if (bind.with_filename) {
+			output.SetValue(output.ColumnCount() - 1, out_row, Value(st.current_file));
+		}
 		out_row++;
 	}
 	output.SetCardinality(out_row);
@@ -266,6 +196,7 @@ static void AddReaderParams(TableFunction &f) {
 	f.named_parameters["framing"] = LogicalType::VARCHAR;  // 'fixed' | 'lf' | 'crlf'
 	f.named_parameters["lenient"] = LogicalType::BOOLEAN;  // salvage complete records
 	f.named_parameters["encoding"] = LogicalType::VARCHAR; // 'utf-8' (default) | 'latin-1'
+	f.named_parameters["filename"] = LogicalType::BOOLEAN; // add a source-file column
 }
 
 void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
@@ -274,12 +205,13 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 		AddReaderParams(f);
 		RegisterDocTableFunction(
 		    loader, std::move(f),
-		    "Read an SAP IDoc flat file as generic long rows: one row per data (EDI_DD40) record with "
-		    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. "
-		    "Framing (fixed/lf/crlf) is auto-detected; 'lenient' salvages truncated files and 'encoding' "
-		    "decodes non-UTF-8 SDATA.",
+		    "Read one or many SAP IDoc flat files as generic long rows: one row per data (EDI_DD40) record with "
+		    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. The path may "
+		    "be a single file or a glob ('dir/*.idoc', 's3://bucket/idocs/*.idoc') resolved over DuckDB's "
+		    "filesystem. Framing is auto-detected; 'lenient' salvages truncated files, 'encoding' decodes non-UTF-8 "
+		    "SDATA, and 'filename := true' adds the source-file column.",
 		    {"SELECT * FROM sap_idoc_read('flight.idoc')",
-		     "SELECT segnam, sdata FROM sap_idoc_read('port.idoc', framing='crlf')"},
+		     "SELECT filename, segnam FROM sap_idoc_read('corpus/*.idoc', filename=true)"},
 		    {"path"});
 	}
 	{
@@ -288,18 +220,21 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 		AddReaderParams(f);
 		RegisterDocTableFunction(
 		    loader, std::move(f),
-		    "Read the typed control record(s) of an SAP IDoc flat file — all 36 EDI_DC40 fields "
-		    "(tabnam, docnum, idoctyp, mestyp, sndprn, rcvprn, …) plus a document_key. One row per IDoc.",
-		    {"SELECT idoctyp, mestyp, sndprn FROM sap_idoc_read_control('flight.idoc')"}, {"path"});
+		    "Read the typed control record(s) of one or many SAP IDoc flat (or XML) files — all 36 EDI_DC40 fields "
+		    "(tabnam, docnum, idoctyp, mestyp, sndprn, rcvprn, …) plus a document_key. One row per IDoc; accepts a "
+		    "glob and 'filename := true'.",
+		    {"SELECT idoctyp, mestyp, sndprn FROM sap_idoc_read_control('flight.idoc')",
+		     "SELECT filename, idoctyp FROM sap_idoc_read_control('corpus/*.idoc', filename=true)"},
+		    {"path"});
 	}
 	{
 		TableFunction f("sap_idoc_read_raw", {LogicalType::VARCHAR}, ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal);
 		AddReaderParams(f);
 		RegisterDocTableFunction(
 		    loader, std::move(f),
-		    "Read every physical record of an SAP IDoc flat file with its exact bytes: document_key, "
-		    "record_index, record_type ('C' control / 'D' data) and raw_record (BLOB). This is the "
-		    "byte-exact source for the writer — COPY (…) TO … (FORMAT sap_idoc).",
+		    "Read every physical record of one or many SAP IDoc flat files with exact bytes: document_key, "
+		    "record_index, record_type ('C' control / 'D' data) and raw_record (BLOB). Byte-exact source for the "
+		    "writer — COPY (…) TO … (FORMAT sap_idoc). Accepts a glob and 'filename := true'.",
 		    {"COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index) TO 'g.idoc' (FORMAT "
 		     "sap_idoc)"},
 		    {"path"});

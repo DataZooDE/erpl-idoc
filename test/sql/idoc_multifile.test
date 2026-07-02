@@ -1,0 +1,64 @@
+# name: test/sql/idoc_multifile.test
+# description: multi-file / glob reads + the filename column across the flat readers
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# materialize two identical IDoc files in the test's temp dir
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/mf_a.idoc' (FORMAT sap_idoc);
+
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/mf_b.idoc' (FORMAT sap_idoc);
+
+# a glob reads BOTH files: twice the data records of a single file
+query I
+SELECT (SELECT count(*) FROM sap_idoc_read('__TEST_DIR__/mf_*.idoc'))
+     = 2 * (SELECT count(*) FROM sap_idoc_read('test/fixtures/flight.idoc'));
+----
+true
+
+# the filename column distinguishes the two source files
+query I
+SELECT count(DISTINCT filename) FROM sap_idoc_read('__TEST_DIR__/mf_*.idoc', filename=true);
+----
+2
+
+# control reader over the glob -> one row per IDoc (2)
+query I
+SELECT count(*) FROM sap_idoc_read_control('__TEST_DIR__/mf_*.idoc');
+----
+2
+
+# raw reader over the glob, with filename column
+query I
+SELECT count(DISTINCT filename) FROM sap_idoc_read_raw('__TEST_DIR__/mf_*.idoc', filename=true);
+----
+2
+
+# read_fields over the glob still decodes the typed segment in each file
+query I
+SELECT count(*) FROM sap_idoc_read_fields('__TEST_DIR__/mf_*.idoc', 'test/fixtures/flight_dict.csv', filename=true)
+WHERE segnam='E1BPSBONEW' AND field_name='AIRLINEID' AND value='LH';
+----
+2
+
+# read_segment over the glob -> the segment appears once per file
+query I
+SELECT count(*) FROM sap_idoc_read_segment('__TEST_DIR__/mf_*.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
+----
+2
+
+# a glob that matches nothing is a clear error
+statement error
+SELECT * FROM sap_idoc_read('__TEST_DIR__/nope_*.idoc');
+----
+no files match
+
+# a single exact path still works unchanged (back-compat)
+query I
+SELECT count(*) FROM sap_idoc_read('test/fixtures/flight.idoc');
+----
+2
