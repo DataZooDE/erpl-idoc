@@ -89,6 +89,9 @@ static void IdocWriteSink(ExecutionContext &context, FunctionData &bind_data, Gl
 	auto &bind = bind_data.Cast<IdocWriteBindData>();
 	auto &state = gstate.Cast<IdocWriteGlobalState>();
 	lock_guard<mutex> glock(state.lock);
+	if (!state.handle) {
+		throw IOException("COPY (FORMAT sap_idoc): write attempted after file was finalized");
+	}
 
 	const char *term = (bind.framing == Framing::TERMINATED_CRLF) ? "\r\n"
 	                   : (bind.framing == Framing::TERMINATED_LF)  ? "\n"
@@ -129,7 +132,10 @@ static void IdocWriteCombine(ExecutionContext &context, FunctionData &bind_data,
 static void IdocWriteFinalize(ClientContext &context, FunctionData &bind_data, GlobalFunctionData &gstate) {
 	auto &state = gstate.Cast<IdocWriteGlobalState>();
 	lock_guard<mutex> glock(state.lock);
-	state.handle->Close();
+	if (state.handle) {
+		state.handle->Close();
+		state.handle.reset();
+	}
 }
 
 void RegisterIdocCopyFunction(ExtensionLoader &loader) {
