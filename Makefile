@@ -4,6 +4,9 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=erpl_idoc
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
+# vcpkg provides dependencies (tinyxml2). Same wiring as erpl-web.
+VCPKG_TOOLCHAIN_PATH?=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
@@ -21,11 +24,31 @@ sql_tests: debug
 
 # Fast, DuckDB-free unit tests for the pure format core (compiled standalone with
 # the bundled Catch2 — seconds, no full extension build needed).
+# Fast, DuckDB-free unit tests for the pure format core (Catch2). tinyxml2 comes from
+# the vcpkg_installed tree that `make debug`/`make release` populate, so run a build
+# first. VCPKG_INSTALLED can be overridden to point at another install prefix.
+# Derive the vcpkg triplet prefix from wherever tinyxml2.h landed (skips the
+# vcpkg_installed/vcpkg metadata dir and is triplet-agnostic).
+VCPKG_TXML_H := $(firstword $(wildcard build/debug/vcpkg_installed/*/include/tinyxml2.h) $(wildcard build/release/vcpkg_installed/*/include/tinyxml2.h))
+VCPKG_PREFIX := $(patsubst %/include/tinyxml2.h,%,$(VCPKG_TXML_H))
+# Format-core tests only — no tinyxml2, no vcpkg (just the bundled Catch2). Suitable
+# for a fast CI job that has the duckdb submodule but no vcpkg install.
+.PHONY: core_tests_format
+core_tests_format:
+	mkdir -p build
+	g++ -std=c++17 -O0 -g -Isrc/include -Isrc/idoc -Iduckdb/third_party/catch \
+	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp src/idoc/idoc_format.cpp \
+	    -o build/core_tests_format
+	IDOC_FIXTURE=test/fixtures/flight.idoc build/core_tests_format
+
+# Full core tests incl. the IDoc-XML core (tinyxml2 from the vcpkg_installed tree that
+# `make debug`/`make release` populate — run a build first).
 .PHONY: core_tests
 core_tests:
-	g++ -std=c++17 -O0 -g -Isrc/include -Isrc/idoc -Ithird_party/tinyxml2 -Iduckdb/third_party/catch \
+	g++ -std=c++17 -O0 -g -Isrc/include -Isrc/idoc -I$(VCPKG_PREFIX)/include -Iduckdb/third_party/catch \
 	    test/cpp/test_main.cpp test/cpp/test_idoc_format.cpp test/cpp/test_idoc_xml.cpp \
-	    src/idoc/idoc_format.cpp src/idoc/idoc_xml.cpp third_party/tinyxml2/tinyxml2.cpp \
+	    src/idoc/idoc_format.cpp src/idoc/idoc_xml.cpp \
+	    -L$(VCPKG_PREFIX)/lib -ltinyxml2 \
 	    -o build/core_tests
 	IDOC_FIXTURE=test/fixtures/flight.idoc build/core_tests
 
