@@ -50,7 +50,11 @@ inline vector<std::string> IdocResolvePaths(ClientContext &context, const Value 
 			return;
 		}
 		auto &fs = FileSystem::GetFileSystem(context);
-		auto files = fs.GlobFiles(p, FileGlobOptions::ALLOW_EMPTY);
+		// FileSystem::Glob(path, opener) has an identical signature across DuckDB
+		// v1.4.x and v1.5.x, whereas GlobFiles diverged (v1.4 takes ClientContext&,
+		// v1.5 takes FileGlobInput). Glob returns empty on no match — we raise our
+		// own BinderException below, matching the previous ALLOW_EMPTY behaviour.
+		auto files = fs.Glob(p);
 		if (files.empty()) {
 			throw BinderException("sap_idoc: no files match the pattern '%s'", p);
 		}
