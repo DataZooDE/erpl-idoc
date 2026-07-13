@@ -47,6 +47,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Anonymous, opt-out telemetry (SET erpl_telemetry_enabled=false to disable).
 	PostHogTelemetry::Instance().SetAPIKey(ERPL_TELEMETRY_KEY);
+	PostHogTelemetry::Instance().SetProduct("erpl_idoc", "2026.07.02", "oss");
+	PostHogTelemetry::Instance().AssociateGroup("deployment", PostHogTelemetry::GetDistinctId());
 	PostHogTelemetry::Instance().CaptureExtensionLoad("erpl_idoc", "0.1.0");
 	RegisterConfiguration(loader.GetDatabaseInstance());
 

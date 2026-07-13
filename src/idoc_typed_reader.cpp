@@ -46,7 +46,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	bind->files = IdocResolvePaths(context, input.inputs[0]);
 	bind->segnam = input.inputs[1].GetValue<string>();
 	auto dict = input.inputs[2].GetValue<string>();
-	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_segment");
+	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_read_segment");
 
 	auto &np = input.named_parameters;
 	if (np.count("framing") && !np["framing"].IsNull()) {
@@ -164,7 +164,7 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 	auto bind = make_uniq<ReadFieldsBindData>();
 	bind->files = IdocResolvePaths(context, input.inputs[0]);
 	auto dict = input.inputs[1].GetValue<string>();
-	PostHogTelemetry::Instance().CaptureFunctionExecution("sap_idoc_read_fields");
+	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_read_fields");
 
 	auto &np = input.named_parameters;
 	if (np.count("framing") && !np["framing"].IsNull()) {
