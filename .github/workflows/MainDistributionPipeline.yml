@@ -32,12 +32,12 @@ jobs:
       - name: Compile and run format-core tests
         run: make core_tests_format
 
-  # ---- DuckDB v1.5.4 ---------------------------------------------------------
+  # ---- DuckDB v1.5.5 ---------------------------------------------------------
   duckdb-v154-build:
-    name: Build & test (v1.5.4)
+    name: Build & test (v1.5.5)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
-      duckdb_version: v1.5.4
+      duckdb_version: v1.5.5
       ci_tools_version: v1.5-variegata
       extension_name: erpl_idoc
       vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
@@ -53,12 +53,12 @@ jobs:
         endif()
 
   duckdb-v154-deploy:
-    name: Deploy (v1.5.4)
+    name: Deploy (v1.5.5)
     needs: duckdb-v154-build
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.5.4
+      duckdb_version: v1.5.5
       extension_name: erpl_idoc
       exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
@@ -74,7 +74,7 @@ jobs:
       extension_name: erpl_idoc
       vcpkg_commit: ce613c41372b23b1f51333815feb3edd87ef8a8b
       exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
-      # See v1.5.4 job: apply -fno-gnu-unique globally on GCC to avoid STB_GNU_UNIQUE
+      # See v1.5.5 job: apply -fno-gnu-unique globally on GCC to avoid STB_GNU_UNIQUE
       # multiple-definition link errors (duckdb tools/plan_serializer) on GCC 14+.
       extra_extension_config: |
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
