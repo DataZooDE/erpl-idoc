@@ -10,6 +10,7 @@
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
 #include "telemetry.hpp"
+#include "erpl_idoc_banner.hpp"
 
 namespace duckdb {
 
@@ -41,6 +42,17 @@ inline void IdocVersionScalarFun(DataChunk &args, ExpressionState &state, Vector
 	});
 }
 
+} // namespace duckdb
+
+// Deliberately outside namespace duckdb: the banner library is DuckDB-agnostic
+// (the same header serves erpl-adt and flapi), and the guard macro refers to
+// this object from every guarded source file, all of which declare it at global
+// scope via erpl_idoc_banner.hpp.
+const datazoo::BannerInfo ERPL_IDOC_BANNER {"erpl_idoc", "2026.07.02",
+                                            "https://github.com/DataZooDE/erpl-idoc"};
+
+namespace duckdb {
+
 static void LoadInternal(ExtensionLoader &loader) {
 	loader.SetDescription("SAP IDoc flat-file reader and writer for DuckDB — read IDoc files as tables and "
 	                      "emit byte-valid IDoc files from SQL. Offline core; live-SAP access via erpl_rfc.");
@@ -53,7 +65,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterConfiguration(loader.GetDatabaseInstance());
 
 	RegisterDocScalarFunction(
-	    loader, ScalarFunction("sap_idoc_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, IdocVersionScalarFun),
+	    loader, ScalarFunction("sap_idoc_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DATAZOO_GUARD(ERPL_IDOC_BANNER, IdocVersionScalarFun)),
 	    "Smoke/echo function proving erpl_idoc is loaded; returns 'erpl_idoc <arg>'.",
 	    {"SELECT sap_idoc_version('ok')"}, {"tag"});
 
@@ -64,6 +76,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	RegisterIdocMacros(loader);
 	RegisterIdocDictFunctions(loader);
 	RegisterIdocXmlFunctions(loader);
+
+	datazoo::RegisterBannerOption(loader);
+	// Last, so a load that fails earlier never advertises itself. Silent unless
+	// stderr is a terminal and the ~/.duckdb stamp is over a day old.
+	datazoo::ShowBanner(ERPL_IDOC_BANNER);
 }
 
 void ErplIdocExtension::Load(ExtensionLoader &loader) {

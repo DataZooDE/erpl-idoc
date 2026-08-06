@@ -13,6 +13,7 @@
 #include "idoc_xml.hpp"
 
 #include <map>
+#include "erpl_idoc_banner.hpp"
 
 namespace duckdb {
 
@@ -311,7 +312,8 @@ static void XmlToRecScan(ClientContext &, TableFunctionInput &data_p, DataChunk 
 
 void RegisterIdocXmlFunctions(ExtensionLoader &loader) {
 	RegisterDocTableFunction(
-	    loader, TableFunction("sap_idoc_read_xml", {LogicalType::VARCHAR}, ReadXmlScan, ReadXmlBind, ReadXmlInit),
+	    loader, TableFunction("sap_idoc_read_xml", {LogicalType::VARCHAR}, DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadXmlScan),
+	                  DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadXmlBind), ReadXmlInit),
 	    "Read an IDoc-XML file as generic long rows: document_key, seq, segnam, hlevel, field_name, value "
 	    "(control fields appear as segnam='EDI_DC40', hlevel 0). IDoc-XML is self-describing, so no dictionary "
 	    "is needed.",
@@ -319,14 +321,16 @@ void RegisterIdocXmlFunctions(ExtensionLoader &loader) {
 
 	RegisterDocTableFunction(
 	    loader,
-	    TableFunction("sap_idoc_to_xml", {LogicalType::VARCHAR, LogicalType::VARCHAR}, ToXmlScan, ToXmlBind, ToXmlInit),
+	    TableFunction("sap_idoc_to_xml", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                  DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlScan), DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlBind),
+	                  ToXmlInit),
 	    "Convert a flat IDoc file to IDoc-XML (returns one row with the XML text). The dictionary names each "
 	    "SDATA field. Inverse of sap_idoc_xml_to_records.",
 	    {"SELECT xml FROM sap_idoc_to_xml('flight.idoc', 'flight_dict.csv')"}, {"flat_path", "dict"});
 
 	RegisterDocTableFunction(
 	    loader,
-	    TableFunction("sap_idoc_xml_to_records", {LogicalType::VARCHAR, LogicalType::VARCHAR}, XmlToRecScan,
+	    TableFunction("sap_idoc_xml_to_records", {LogicalType::VARCHAR, LogicalType::VARCHAR}, DATAZOO_GUARD(ERPL_IDOC_BANNER, XmlToRecScan),
 	                  XmlToRecBind, XmlToRecInit),
 	    "Convert an IDoc-XML file to flat records (document_key, record_index, record_type, raw_record BLOB), "
 	    "recomputing SEGNUM/PSGNUM from the XML nesting and packing SDATA per the dictionary. Feed raw_record "

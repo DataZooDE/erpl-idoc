@@ -315,6 +315,20 @@ make test           # SQL test suite
 Issues and PRs welcome. The engineering norm here is **TDD with no mocks** — “done”
 means it works end-to-end against a real SAP system, verified by a byte-exact round trip.
 
+## 💬 Feedback
+
+If `erpl_idoc` misreads a file, writes something SAP rejects, or does anything
+surprising, please [open an issue](https://github.com/DataZooDE/erpl-idoc/issues).
+IDoc layouts vary by release, segment version and customer extension in ways we cannot
+reproduce here, so a report with a (redacted) sample is the fastest path to a fix.
+Every error the extension raises ends with that link.
+
+If it saved you time, a star on the repo helps other people find it.
+
+The first time you load the extension in an interactive terminal each day, a small
+banner says the same thing. It never prints when output is piped, in notebooks, or in
+CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
+
 ## 🔐 Telemetry
 
 `erpl_idoc` collects **anonymous, opt-out** usage telemetry (extension/DuckDB version,

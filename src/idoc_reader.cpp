@@ -5,6 +5,7 @@
 #include "idoc_multifile.hpp"
 #include "idoc_doc.hpp"
 #include "telemetry.hpp"
+#include "erpl_idoc_banner.hpp"
 
 namespace duckdb {
 
@@ -227,7 +228,8 @@ static TableFunctionSet MakeReaderSet(const string &name, table_function_t scan,
 
 void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	RegisterDocTableFunctionSet(
-	    loader, MakeReaderSet("sap_idoc_read", ReadIdocScan, ReadIdocBind, IdocInitGlobal),
+	    loader, MakeReaderSet("sap_idoc_read", DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocScan),
+	                      DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocBind), IdocInitGlobal),
 	    "Read one or many SAP IDoc flat files as generic long rows: one row per data (EDI_DD40) record with "
 	    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. The path may "
 	    "be a single file, a glob ('dir/*.idoc', 's3://bucket/idocs/*.idoc') resolved over DuckDB's filesystem, "
@@ -239,7 +241,8 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	    {"path"});
 
 	RegisterDocTableFunctionSet(
-	    loader, MakeReaderSet("sap_idoc_read_control", ReadIdocControlScan, ReadIdocControlBind, IdocInitGlobal),
+	    loader, MakeReaderSet("sap_idoc_read_control", DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocControlScan),
+	                      DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocControlBind), IdocInitGlobal),
 	    "Read the typed control record(s) of one or many SAP IDoc flat (or XML) files — all 36 EDI_DC40 fields "
 	    "(tabnam, docnum, idoctyp, mestyp, sndprn, rcvprn, …) plus a document_key. One row per IDoc; accepts a "
 	    "single path, a glob, or a LIST of paths, and 'filename := true'.",
@@ -248,7 +251,8 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	    {"path"});
 
 	RegisterDocTableFunctionSet(
-	    loader, MakeReaderSet("sap_idoc_read_raw", ReadIdocRawScan, ReadIdocRawBind, IdocInitGlobal),
+	    loader, MakeReaderSet("sap_idoc_read_raw", DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocRawScan),
+	                      DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocRawBind), IdocInitGlobal),
 	    "Read every physical record of one or many SAP IDoc flat files with exact bytes: document_key, "
 	    "record_index, record_type ('C' control / 'D' data) and raw_record (BLOB). Byte-exact source for the "
 	    "writer — COPY (…) TO … (FORMAT sap_idoc). Accepts a single path, a glob, or a LIST, and 'filename := true'.",

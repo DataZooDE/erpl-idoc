@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <set>
+#include "erpl_idoc_banner.hpp"
 
 namespace duckdb {
 
@@ -298,7 +299,8 @@ static void DictFromFieldsFun(DataChunk &args, ExpressionState &state, Vector &r
 
 void RegisterIdocDictFunctions(ExtensionLoader &loader) {
 	RegisterDocTableFunction(
-	    loader, TableFunction("sap_idoc_dict_offsets", {LogicalType::VARCHAR}, OffsetsScan, OffsetsBind, OffsetsInit),
+	    loader, TableFunction("sap_idoc_dict_offsets", {LogicalType::VARCHAR}, DATAZOO_GUARD(ERPL_IDOC_BANNER, OffsetsScan),
+	                  DATAZOO_GUARD(ERPL_IDOC_BANNER, OffsetsBind), OffsetsInit),
 	    "Compute a segment dictionary's field offsets from lengths only: the 0-based SDATA offset of each "
 	    "field is the cumulative width of the preceding fields in the same segment. Input needs "
 	    "segnam, field_pos, field_name, length (datatype optional). 'src' is a .csv/.parquet path, a "
@@ -306,7 +308,8 @@ void RegisterIdocDictFunctions(ExtensionLoader &loader) {
 	    {"SELECT * FROM sap_idoc_dict_offsets('my_fields.csv')"}, {"src"});
 
 	RegisterDocTableFunction(
-	    loader, TableFunction("sap_idoc_dict_validate", {LogicalType::VARCHAR}, ValidateScan, ValidateBind, ValidateInit),
+	    loader, TableFunction("sap_idoc_dict_validate", {LogicalType::VARCHAR}, DATAZOO_GUARD(ERPL_IDOC_BANNER, ValidateScan),
+	                  DATAZOO_GUARD(ERPL_IDOC_BANNER, ValidateBind), ValidateInit),
 	    "Validate a segment dictionary: returns one row per structural problem (offset<0/length<=0, field "
 	    "exceeds SDATA(1000), overlaps the previous field, duplicate field_pos). An empty result means the "
 	    "dictionary is structurally sound.",
@@ -317,7 +320,7 @@ void RegisterIdocDictFunctions(ExtensionLoader &loader) {
 	    ScalarFunction("sap_idoc_dict_from_fields",
 	                   {LogicalType::LIST(LogicalType::ANY), LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                    LogicalType::VARCHAR},
-	                   LogicalType::LIST(LogicalType::STRUCT(B4Fields())), DictFromFieldsFun),
+	                   LogicalType::LIST(LogicalType::STRUCT(B4Fields())), DATAZOO_GUARD(ERPL_IDOC_BANNER, DictFromFieldsFun)),
 	    "Normalize an IDOCTYPE_READ_COMPLETE PT_FIELDS list into the SPEC B4 dictionary schema (the "
 	    "transform used internally by the sap_idoc_dictionary macro). Pure — it only reshapes data that "
 	    "erpl_rfc already returned; no RFC is performed here.",
