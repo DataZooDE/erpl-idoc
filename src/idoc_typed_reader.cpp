@@ -11,6 +11,7 @@
 
 #include <cctype>
 #include <map>
+#include "erpl_idoc_banner.hpp"
 
 namespace duckdb {
 
@@ -290,7 +291,8 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 		TableFunctionSet set("sap_idoc_read_segment");
 		for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
 			TableFunction f("sap_idoc_read_segment", {first, LogicalType::VARCHAR, LogicalType::VARCHAR},
-			                ReadSegmentScan, ReadSegmentBind, ReadSegmentInitGlobal, TypedInitLocal);
+			                DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadSegmentScan),
+	                DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadSegmentBind), ReadSegmentInitGlobal, TypedInitLocal);
 			f.named_parameters["framing"] = LogicalType::VARCHAR;
 			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
 			f.named_parameters["encoding"] = LogicalType::VARCHAR;
@@ -310,7 +312,8 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 	{
 		TableFunctionSet set("sap_idoc_read_fields");
 		for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
-			TableFunction f("sap_idoc_read_fields", {first, LogicalType::VARCHAR}, ReadFieldsScan, ReadFieldsBind,
+			TableFunction f("sap_idoc_read_fields", {first, LogicalType::VARCHAR}, DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadFieldsScan),
+	                DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadFieldsBind),
 			                ReadFieldsInitGlobal, TypedInitLocal);
 			f.named_parameters["framing"] = LogicalType::VARCHAR;
 			f.named_parameters["lenient"] = LogicalType::BOOLEAN;

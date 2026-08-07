@@ -4,6 +4,7 @@
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
 #include "idoc_doc.hpp"
+#include "erpl_idoc_banner.hpp"
 
 namespace duckdb {
 
@@ -83,7 +84,7 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader) {
 	    ScalarFunction("sap_idoc_encode_sdata",
 	                   {LogicalType::LIST(LogicalType::BIGINT), LogicalType::LIST(LogicalType::BIGINT),
 	                    LogicalType::LIST(LogicalType::VARCHAR)},
-	                   LogicalType::VARCHAR, EncodeSdataFun),
+	                   LogicalType::VARCHAR, DATAZOO_GUARD(ERPL_IDOC_BANNER, EncodeSdataFun)),
 	    "Compose a 1000-byte IDoc SDATA payload by placing each value at its (offset, length) — the "
 	    "parallel lists come from the segment dictionary. Values are space-padded/truncated to width.",
 	    {"SELECT sap_idoc_encode_sdata([0,3], [3,4], ['LH','0400'])"}, {"offsets", "lengths", "values"});
@@ -93,7 +94,7 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader) {
 	    ScalarFunction("sap_idoc_encode_data_record",
 	                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT,
 	                    LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR},
-	                   LogicalType::BLOB, EncodeDataRecordFun),
+	                   LogicalType::BLOB, DATAZOO_GUARD(ERPL_IDOC_BANNER, EncodeDataRecordFun)),
 	    "Compose a 1063-byte EDI_DD40 data record (BLOB). Numeric header fields (docnum, segnum, psgnum, "
 	    "hlevel) are zero-padded to SAP widths; segnam/mandt/sdata are placed as-is.",
 	    {"SELECT sap_idoc_encode_data_record('E1BPSBONEW','001',0,2,1,2, my_sdata)"},
@@ -102,7 +103,7 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader) {
 	RegisterDocScalarFunction(
 	    loader,
 	    ScalarFunction("sap_idoc_encode_control", {LogicalType::LIST(LogicalType::VARCHAR)}, LogicalType::BLOB,
-	                   EncodeControlFun),
+	                   DATAZOO_GUARD(ERPL_IDOC_BANNER, EncodeControlFun)),
 	    "Compose a 524-byte EDI_DC40 control record (BLOB) from up to 36 field values given in EDI_DC40 "
 	    "order (tabnam, mandt, docnum, docrel, …, serial); missing/short values are space-padded.",
 	    {"SELECT sap_idoc_encode_control(['EDI_DC40','001', …])"}, {"values"});

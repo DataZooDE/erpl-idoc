@@ -29,6 +29,12 @@ include_directories(
 set(DUCKDB_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party")
 add_subdirectory(posthog-telemetry)
 
+# Feedback banner (header-only). Telemetry ON so a printed banner is counted as
+# a banner_shown event through the instance configured above; it obeys the same
+# erpl_telemetry_enabled opt-out.
+set(DATAZOO_BANNER_TELEMETRY ON CACHE BOOL "" FORCE)
+add_subdirectory(datazoo-banner)
+
 # The flat-file IDoc core is pure and offline (no SAP / NW RFC SDK). Live-SAP access
 # is composed via erpl_rfc at the SQL layer (see sql/).
 set(EXTENSION_SOURCES
@@ -62,8 +68,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 # Link tinyxml2, telemetry, and OpenSSL into both the static and loadable extension.
-target_link_libraries(${EXTENSION_NAME} tinyxml2::tinyxml2 posthog_telemetry OpenSSL::SSL OpenSSL::Crypto)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} tinyxml2::tinyxml2 posthog_telemetry OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(${EXTENSION_NAME} tinyxml2::tinyxml2 posthog_telemetry datazoo_banner OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(${LOADABLE_EXTENSION_NAME} tinyxml2::tinyxml2 posthog_telemetry datazoo_banner OpenSSL::SSL OpenSSL::Crypto)
 
 install(
   TARGETS ${EXTENSION_NAME}
