@@ -52,9 +52,18 @@ jobs:
           set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-gnu-unique")
         endif()
 
+  duckdb-v154-smoke-test:
+    name: Smoke test (v1.5.5)
+    needs: duckdb-v154-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.5.5
+      extension_name: erpl_idoc
+      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
+
   duckdb-v154-deploy:
     name: Deploy (v1.5.5)
-    needs: duckdb-v154-build
+    needs: [duckdb-v154-build, duckdb-v154-smoke-test]
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
@@ -81,9 +90,18 @@ jobs:
           set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-gnu-unique")
         endif()
 
+  duckdb-v145-smoke-test:
+    name: Smoke test (v1.4.5)
+    needs: duckdb-v145-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.4.5
+      extension_name: erpl_idoc
+      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
+
   duckdb-v145-deploy:
     name: Deploy (v1.4.5)
-    needs: duckdb-v145-build
+    needs: [duckdb-v145-build, duckdb-v145-smoke-test]
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
