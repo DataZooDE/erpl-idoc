@@ -238,7 +238,7 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	    {"SELECT * FROM sap_idoc_read('flight.idoc')",
 	     "SELECT filename, segnam FROM sap_idoc_read('corpus/*.idoc', filename=true)",
 	     "SELECT * FROM sap_idoc_read(['a.idoc', 'b.idoc'])"},
-	    {"path"});
+	    {"path", "filename", "encoding", "lenient", "framing"});
 
 	RegisterDocTableFunctionSet(
 	    loader, MakeReaderSet("sap_idoc_read_control", DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocControlScan),
@@ -248,7 +248,7 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	    "single path, a glob, or a LIST of paths, and 'filename := true'.",
 	    {"SELECT idoctyp, mestyp, sndprn FROM sap_idoc_read_control('flight.idoc')",
 	     "SELECT filename, idoctyp FROM sap_idoc_read_control('corpus/*.idoc', filename=true)"},
-	    {"path"});
+	    {"path", "filename", "encoding", "lenient", "framing"});
 
 	RegisterDocTableFunctionSet(
 	    loader, MakeReaderSet("sap_idoc_read_raw", DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadIdocRawScan),
@@ -258,7 +258,7 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	    "writer — COPY (…) TO … (FORMAT sap_idoc). Accepts a single path, a glob, or a LIST, and 'filename := true'.",
 	    {"COPY (SELECT raw_record FROM sap_idoc_read_raw('f.idoc') ORDER BY record_index) TO 'g.idoc' (FORMAT "
 	     "sap_idoc)"},
-	    {"path"});
+	    {"path", "filename", "encoding", "lenient", "framing"});
 }
 
 } // namespace duckdb

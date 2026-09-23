@@ -73,6 +73,17 @@ jobs:
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
 
+  # windows_amd64 is excluded on the LTS line ONLY. MSYS2 removed
+  # msys2-runtime-3.5.4-2 from every mirror (404 on all six), which breaks
+  # openssl's vcpkg build in the v1.4.5 toolchain. The same commit builds
+  # Windows fine on v1.5.5, so this is the LTS dependency chain, not our code.
+  #
+  # The consequence is real and deliberate: no LTS Windows artifact ships until
+  # this is unpinned. Tracked in the issue linked from the PR that added this.
+  #
+  # All three of build/smoke-test/deploy carry the same list on purpose -- the
+  # smoke test downloads what the build produced, and a mismatch makes it look
+  # for an artifact that was never built.
   # ---- DuckDB v1.4.5 (latest-2 support window) -------------------------------
   duckdb-v145-build:
     name: Build & test (v1.4.5)
@@ -82,7 +93,7 @@ jobs:
       ci_tools_version: v1.4-andium
       extension_name: erpl_idoc
       vcpkg_commit: ce613c41372b23b1f51333815feb3edd87ef8a8b
-      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
+      exclude_archs: 'windows_amd64;windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
       # See v1.5.5 job: apply -fno-gnu-unique globally on GCC to avoid STB_GNU_UNIQUE
       # multiple-definition link errors (duckdb tools/plan_serializer) on GCC 14+.
       extra_extension_config: |
@@ -97,7 +108,7 @@ jobs:
     with:
       duckdb_version: v1.4.5
       extension_name: erpl_idoc
-      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
+      exclude_archs: 'windows_amd64;windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
 
   duckdb-v145-deploy:
     name: Deploy (v1.4.5)
@@ -107,6 +118,6 @@ jobs:
     with:
       duckdb_version: v1.4.5
       extension_name: erpl_idoc
-      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
+      exclude_archs: 'windows_amd64;windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
