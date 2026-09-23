@@ -307,7 +307,7 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 		    "columns: segnam, field_pos, field_name, offset, length, datatype).",
 		    {"SELECT airlineid, flightdate FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv')",
 		     "SELECT * FROM sap_idoc_read_segment('corpus/*.idoc', 'E1BPSBONEW', 'dict_view')"},
-		    {"path", "segnam", "dict"});
+		    {"path", "segnam", "dict", "filename", "encoding", "lenient", "framing"});
 	}
 	{
 		TableFunctionSet set("sap_idoc_read_fields");
@@ -332,7 +332,7 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 		    "is any dictionary source: a .csv/.parquet path, a table/view name, or a relation expression.",
 		    {"SELECT segnam, field_name, value FROM sap_idoc_read_fields('flight.idoc', 'flight_dict.csv')",
 		     "SELECT * FROM sap_idoc_read_fields('corpus/*.idoc', 'dict', filename=true) WHERE segnam = 'E1BPSBONEW'"},
-		    {"path", "dict"});
+		    {"path", "dict", "filename", "include_unknown", "encoding", "lenient", "framing"});
 	}
 }
 

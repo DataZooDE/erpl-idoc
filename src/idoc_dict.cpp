@@ -324,7 +324,13 @@ void RegisterIdocDictFunctions(ExtensionLoader &loader) {
 	    "Normalize an IDOCTYPE_READ_COMPLETE PT_FIELDS list into the SPEC B4 dictionary schema (the "
 	    "transform used internally by the sap_idoc_dictionary macro). Pure — it only reshapes data that "
 	    "erpl_rfc already returned; no RFC is performed here.",
-	    {"SELECT UNNEST(sap_idoc_dict_from_fields(r.PT_FIELDS,'MATMAS05','','620')) "
+	    // The literal comes first so there is at least one example that runs without
+	    // erpl_rfc and a live SAP system -- which is also the clearest demonstration
+	    // that this function is pure. The RFC form stays as the realistic usage.
+	    {"SELECT UNNEST(sap_idoc_dict_from_fields([{SEGMENTTYP: 'E1MARAM', FIELD_POS: '1', "
+	     "FIELDNAME: 'MATNR', BYTE_FIRST: '0', EXTLEN: '18', DATATYPE: 'CHAR', "
+	     "ROLLNAME: 'MATNR', DESCRP: 'Material number'}], 'MATMAS05', '', '620'))",
+	     "SELECT UNNEST(sap_idoc_dict_from_fields(r.PT_FIELDS,'MATMAS05','','620')) "
 	     "FROM sap_rfc_invoke('IDOCTYPE_READ_COMPLETE', sap_idoc_params('MATMAS05')) r"},
 	    {"fields", "idoctyp", "cimtyp", "release"});
 }

@@ -57,13 +57,50 @@ static const DefaultTableMacro IDOC_TABLE_MACROS[] = {
      "FROM raw, UNNEST(PT_FIELDS) AS t(f) ORDER BY segnam, field_pos"},
     {nullptr, nullptr, {nullptr}, {{nullptr, nullptr}}, nullptr}};
 
+namespace {
+
+// CreateInternalMacroInfo / CreateTableMacroInfo build the info but leave
+// `descriptions` empty, which is why macros normally arrive undocumented even though
+// CreateMacroInfo derives from CreateFunctionInfo like everything else. Pushing the
+// description on before registering is all that is needed.
+//
+// parameter_names is deliberately NOT set: a macro already reports its real parameter
+// names, and a non-empty parameter_names would replace the whole list.
+FunctionDescription MacroDoc(string description, vector<string> examples) {
+	FunctionDescription d;
+	d.description = std::move(description);
+	d.examples = std::move(examples);
+	d.categories = {"sap", "idoc"};
+	return d;
+}
+
+} // namespace
+
 void RegisterIdocMacros(ExtensionLoader &loader) {
+	// Descriptions restate the header comment above, which is where the two-macro
+	// split is explained.
+	const char *scalar_docs[] = {
+	    "Build the IDOCTYPE_READ_COMPLETE import-parameter struct that sap_idoc_dictionary passes to "
+	    "sap_rfc_invoke. Separate from sap_idoc_dictionary because sap_rfc_invoke executes the RFC at "
+	    "BIND time, so its argument must already be constant there; calling this with literals folds to "
+	    "one."};
+	const char *scalar_examples[] = {"sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01')"};
 	for (idx_t i = 0; IDOC_SCALAR_MACROS[i].name != nullptr; i++) {
 		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(IDOC_SCALAR_MACROS[i]);
+		info->descriptions.push_back(MacroDoc(scalar_docs[i], {scalar_examples[i]}));
 		loader.RegisterFunction(*info);
 	}
+
+	const char *table_docs[] = {
+	    "Fetch and normalise a segment dictionary (SPEC B4 schema: segnam, field_pos, field_name, offset, "
+	    "length, datatype) from a live SAP system over erpl_rfc. 'params' must be a struct carrying "
+	    "PI_IDOCTYP/PI_CIMTYP/PI_VERSION -- build it with sap_idoc_params. Requires erpl_rfc to be loaded; "
+	    "on a SAP-less host use a persisted dictionary file instead."};
+	const char *table_examples[] = {
+	    "SELECT * FROM sap_idoc_dictionary(sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01'));"};
 	for (idx_t i = 0; IDOC_TABLE_MACROS[i].name != nullptr; i++) {
 		auto info = DefaultTableFunctionGenerator::CreateTableMacroInfo(IDOC_TABLE_MACROS[i]);
+		info->descriptions.push_back(MacroDoc(table_docs[i], {table_examples[i]}));
 		loader.RegisterFunction(*info);
 	}
 }

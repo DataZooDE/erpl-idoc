@@ -97,7 +97,8 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader) {
 	                   LogicalType::BLOB, DATAZOO_GUARD(ERPL_IDOC_BANNER, EncodeDataRecordFun)),
 	    "Compose a 1063-byte EDI_DD40 data record (BLOB). Numeric header fields (docnum, segnum, psgnum, "
 	    "hlevel) are zero-padded to SAP widths; segnam/mandt/sdata are placed as-is.",
-	    {"SELECT sap_idoc_encode_data_record('E1BPSBONEW','001',0,2,1,2, my_sdata)"},
+	    {"SELECT sap_idoc_encode_data_record('E1BPSBONEW','001',0,2,1,2, "
+	     "sap_idoc_encode_sdata([0,3], [3,4], ['LH','0400']))"},
 	    {"segnam", "mandt", "docnum", "segnum", "psgnum", "hlevel", "sdata"});
 
 	RegisterDocScalarFunction(
@@ -106,7 +107,7 @@ void RegisterIdocEncoderFunctions(ExtensionLoader &loader) {
 	                   DATAZOO_GUARD(ERPL_IDOC_BANNER, EncodeControlFun)),
 	    "Compose a 524-byte EDI_DC40 control record (BLOB) from up to 36 field values given in EDI_DC40 "
 	    "order (tabnam, mandt, docnum, docrel, …, serial); missing/short values are space-padded.",
-	    {"SELECT sap_idoc_encode_control(['EDI_DC40','001', …])"}, {"values"});
+	    {"SELECT sap_idoc_encode_control(['EDI_DC40','001','0000000000000042','740'])"}, {"values"});
 }
 
 } // namespace duckdb
