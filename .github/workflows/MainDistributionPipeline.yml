@@ -79,6 +79,9 @@ jobs:
   # The LTS line pins the same vcpkg baseline as v1.5.6. The older baseline
   # (ce613c4) pulled msys2-runtime-3.5.4-2 for openssl, which MSYS2 deleted from
   # every mirror, so windows_amd64 was excluded until this was bumped (#13).
+  # openssl is held at 3.5.0 in vcpkg.json: the baseline's 3.6.0 needs Linux kernel
+  # headers the arm64 container lacks, so arm64 fails. Both halves are required;
+  # changing either alone turns one platform red.
   # exclude_archs must stay identical across build/smoke-test/deploy.
   # ---- DuckDB v1.4.5 (latest-2 support window) -------------------------------
   duckdb-v145-build:
