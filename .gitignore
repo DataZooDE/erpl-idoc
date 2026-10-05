@@ -35,3 +35,4 @@ test/python/__pycache__/
 
 # Generated IDoc corpus (perf/compat fixtures; regenerate via scripts/gen_idoc_corpus.sh)
 corpus/
+.crew/
