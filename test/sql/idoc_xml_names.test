@@ -1,0 +1,75 @@
+# name: test/sql/idoc_xml_names.test
+# description: IDoc-XML element names: namespaced types ('/' <-> '_-', as SAP renders them) and stray root children
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- stray children of the root used to be silently ignored ---------------------------------------
+statement ok
+COPY (SELECT '<?xml version="1.0"?>' || chr(10) ||
+             '<FLIGHTBOOKING_CREATEFROMDAT01><IDOC BEGIN="1"><EDI_DC40 SEGMENT="1"><DOCNUM>1</DOCNUM></EDI_DC40></IDOC>' ||
+             '<DROPPED>x</DROPPED></FLIGHTBOOKING_CREATEFROMDAT01>')
+  TO '__TEST_DIR__/stray.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement error
+SELECT count(*) FROM sap_idoc_xml_to_records('__TEST_DIR__/stray.xml','test/fixtures/flight_dict.csv');
+----
+unexpected element <DROPPED> under the root
+
+statement error
+SELECT count(*) FROM sap_idoc_read_xml('__TEST_DIR__/stray.xml');
+----
+unexpected element <DROPPED> under the root
+
+# comments and processing instructions are not elements: still fine
+statement ok
+COPY (SELECT '<?xml version="1.0"?>' || chr(10) || '<?xml-stylesheet href="x"?>' || chr(10) || '<!-- hi -->' || chr(10) ||
+             '<FLIGHTBOOKING_CREATEFROMDAT01><!-- c --><IDOC BEGIN="1"><EDI_DC40 SEGMENT="1"><DOCNUM>1</DOCNUM></EDI_DC40></IDOC></FLIGHTBOOKING_CREATEFROMDAT01>')
+  TO '__TEST_DIR__/comments.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query I
+SELECT count(*) FROM sap_idoc_read_xml('__TEST_DIR__/comments.xml');
+----
+1
+
+# --- namespaced basic type + segment: '/' is rendered '_-' (SAP's own convention) -------------------
+# the fixture with IDOCTYP /BA1/FLIGHT01 and segment E1SBO_CRE renamed /B/E1SBO (same widths)
+statement ok
+COPY (SELECT CASE WHEN record_type = 'C'
+                  THEN replace(raw_record::VARCHAR, 'FLIGHTBOOKING_CREATEFROMDAT01', rpad('/BA1/FLIGHT01', 29, ' '))::BLOB
+                  ELSE replace(raw_record::VARCHAR, 'E1SBO_CRE', '/B/E1SBO ')::BLOB END
+      FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/ns.idoc' (FORMAT sap_idoc);
+
+statement ok
+COPY (SELECT * REPLACE (CASE WHEN segnam = 'E1SBO_CRE' THEN '/B/E1SBO' ELSE segnam END AS segnam)
+      FROM read_csv('test/fixtures/flight_dict.csv'))
+  TO '__TEST_DIR__/ns_dict.csv' (FORMAT csv, HEADER true);
+
+statement ok
+COPY (SELECT xml FROM sap_idoc_to_xml('__TEST_DIR__/ns.idoc','__TEST_DIR__/ns_dict.csv'))
+  TO '__TEST_DIR__/ns.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query I
+SELECT count(*) FROM read_csv('__TEST_DIR__/ns.xml', header=false, columns={'l':'VARCHAR'}, delim='\x01', quote='', escape='')
+WHERE l = '<_-BA1_-FLIGHT01>' OR l LIKE '%<_-B_-E1SBO %';
+----
+2
+
+# reading the XML gives the real SAP names back
+query T
+SELECT DISTINCT segnam FROM sap_idoc_read_xml('__TEST_DIR__/ns.xml') WHERE segnam LIKE '/%';
+----
+/B/E1SBO
+
+# and XML -> flat reproduces the namespaced flat file byte-exact
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('__TEST_DIR__/ns.xml','__TEST_DIR__/ns_dict.csv')
+      ORDER BY record_index)
+  TO '__TEST_DIR__/ns_back.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/ns_back.idoc'))
+     = (SELECT content FROM read_blob('__TEST_DIR__/ns.idoc'));
+----
+true
