@@ -431,8 +431,9 @@ Its origin is irrelevant to the parser — a file, a table, a view, or a query a
 network calls. When you want a live round trip, you *compose* it with
 [`erpl_rfc`](https://github.com/DataZooDE/erpl) in SQL:
 
-- **Get a dictionary** — `sap_idoc_dictionary(sap_idoc_params('ORDERS05'))` (above). This is the
-  supported SQL-only live-SAP path.
+- **Get a dictionary** — `sap_idoc_dictionary(sap_idoc_params('ORDERS05'))` (above).
+- **Build a file from an IDoc stored in SAP** — read `EDIDC`/`EDID4` and encode them; see
+  *Build an IDoc file from EDIDC/EDID4* below.
 - **Import a generated IDoc** — there is no one-call SQL import. On the A4H trial,
   `IDOC_INBOUND_WRITE_TO_DB` is not remote-callable, and `IDOC_INBOUND_ASYNCHRONOUS` is but runs
   asynchronously and needs partner profiles. Our end-to-end tests therefore use a thin ABAP helper class
@@ -440,6 +441,48 @@ network calls. When you want a live round trip, you *compose* it with
   inside the system; another route is to place the file where a SAP inbound file port reads it.
 
 This keeps the file format portable and dependency-free.
+
+### Build an IDoc file from EDIDC/EDID4
+
+[`sql/idoc_from_edidc_edid4.sql`](sql/idoc_from_edidc_edid4.sql) turns one IDoc that SAP holds in its tables into a
+flat IDoc file: put the 16-digit `DOCNUM` and a target path into the two placeholders, then run it with `erpl_rfc`
+and `erpl_idoc` loaded and a `sap_rfc` secret created.
+
+```sql
+-- the control record, one row
+SELECT * FROM sap_read_table('EDIDC', FILTER='DOCNUM EQ ''0000000000000013''');
+-- the segments: SDATA needs the Data Services reader (see below), not sap_read_table
+SELECT … FROM sap_rfc_invoke('/SAPDS/RFC_READ_TABLE2', {'QUERY_TABLE': 'EDID4', …}) …;
+-- … then sap_idoc_encode_control / sap_idoc_encode_data_record / COPY (FORMAT sap_idoc), as in the file
+```
+
+What was verified on an A4H trial (`test/e2e/m11_edidc_edid4.sh`): all 36 control fields of the file equal `EDIDC`,
+the segment structure (`SEGNUM`, `SEGNAM`, `PSGNUM`, `HLEVEL`) equals `EDID4`, and the full `SDATA` of every segment
+equals a fresh read of `EDID4` (compared by hash). SAP inbound then accepted the file, stored every segment, and
+its re-read of one segment's `SDATA` (the first 40 characters of `E1BPSBONEW`) matched the source IDoc. The pure-SQL
+parts are also tested offline on `EDIDC`/`EDID4`-shaped tables against the real fixture
+(`test/sql/idoc_from_edidc_edid4.test`): byte-exact output, the fixed-width parsing (including a `|` in the
+payload), text- as well as `DATE`/`TIME`-shaped `CREDAT`/`CRETIM`, and the guards below.
+
+The recipe stops with an error instead of writing a wrong file when the `DOCNUM` is not in `EDIDC`, when `EDID4`
+returns no segments, or when a `SEGNUM` appears twice.
+
+Limits to know:
+- **`EDID4-SDATA` cannot be read with `sap_read_table`.** It is a DDIC `LCHR` field, and `RFC_READ_TABLE` fails
+  on any select list that contains it (the other `EDID4` columns read fine). The recipe uses
+  `/SAPDS/RFC_READ_TABLE2` instead, a Data Services function module that ships with the ST-PI add-on — check that
+  your system has it with `sap_rfc_describe_function('/SAPDS/RFC_READ_TABLE2')`.
+- **Filter form.** On the trial, a `FILTER` of `DOCNUM EQ '…'` worked for `EDID4` while `DOCNUM = '…'` was rejected,
+  and DuckDB's own `WHERE` is not pushed down — use `FILTER`/`OPTIONS` as in the recipe, with literal values.
+- **The control record is copied as stored**, so `STATUS` and `DIRECT` are the database status and direction (here
+  `56`/`2`), not what a file port usually expects. Override them in the recipe if your consumer needs e.g. `30`/`1`.
+  `EDIDC` columns that `EDI_DC40` has no field for (`DOCTYP`, `RCVSMN`…, `UPDDAT`, `UPDTIM`, `MAXSEGNUM`) are dropped;
+  `TABNAM` is the constant `EDI_DC40`; `IDOCTP` becomes `IDOCTYP`.
+- **Placeholders are pasted into SQL string literals**: `<<<DOCNUM>>>` must be exactly 16 digits (it also ends up in
+  the ABAP `WHERE`) and the target path must not contain a single quote.
+- **Not claimed:** that the file is byte-identical to one SAP's own outbound processing would write; large IDocs
+  (only a 2-segment IDoc of one basic type was exercised, so the one-row-per-segment, ≤1044-byte rows landing in
+  `TBLOUT2048` is untested at scale); non-ASCII payloads; status records (`EDIDS`).
 
 ---
 
@@ -451,8 +494,8 @@ both framings, multi-IDoc files and globs, lenient/error handling, `utf-8`/`asci
 decode, and IDoc-XML read/write + flat↔XML conversion.
 
 **Not (yet):**
-- `EDIDC`/`EDID4`/`EDIDS` **table** input or status-record side output — IDoc content read from SAP tables must be
-  re-encoded by hand;
+- `EDIDS` status records / side output — and a packaged function for `EDIDC`/`EDID4` input (it is a SQL recipe, see
+  *Build an IDoc file from EDIDC/EDID4*);
 - X12/EDIFACT conversion;
 - business-semantic validation (only dictionary and record-width structure is checked);
 - glob/`LIST`, streaming and parallelism for the **XML** functions (one file at a time, in memory; one basic type per XML document);

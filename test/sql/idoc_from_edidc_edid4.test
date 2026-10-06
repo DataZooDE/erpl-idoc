@@ -1,0 +1,152 @@
+# name: test/sql/idoc_from_edidc_edid4.test
+# description: the pure-SQL parts of sql/idoc_from_edidc_edid4.sql, on EDIDC/EDID4-shaped inputs, reproduce the real fixture byte-exact
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# ---------------------------------------------------------------------------------------------
+# EDIDC-shaped: one row, SAP's column names (IDOCTP instead of IDOCTYP, no TABNAM,
+# CREDAT/CRETIM as DATE/TIME like erpl_rfc returns them), built from the fixture's control record
+# ---------------------------------------------------------------------------------------------
+statement ok
+CREATE TEMP TABLE edidc_src AS
+SELECT mandt AS MANDT, docnum AS DOCNUM, docrel AS DOCREL, status AS STATUS, direct AS DIRECT, outmod AS OUTMOD,
+       exprss AS EXPRSS, test AS TEST, idoctyp AS IDOCTP, cimtyp AS CIMTYP, mestyp AS MESTYP, mescod AS MESCOD,
+       mesfct AS MESFCT, std AS STD, stdvrs AS STDVRS, stdmes AS STDMES, sndpor AS SNDPOR, sndprt AS SNDPRT,
+       sndpfc AS SNDPFC, sndprn AS SNDPRN, sndsad AS SNDSAD, sndlad AS SNDLAD, rcvpor AS RCVPOR, rcvprt AS RCVPRT,
+       rcvpfc AS RCVPFC, rcvprn AS RCVPRN, rcvsad AS RCVSAD, rcvlad AS RCVLAD,
+       strptime(credat, '%Y%m%d')::DATE AS CREDAT, strptime(cretim, '%H%M%S')::TIME AS CRETIM,
+       refint AS REFINT, refgrp AS REFGRP, refmes AS REFMES, arckey AS ARCKEY, serial AS SERIAL
+FROM sap_idoc_read_control('test/fixtures/flight.idoc');
+
+query I
+SELECT count(*) FROM edidc_src;
+----
+1
+
+# EDID4-shaped: one row per segment, SDATA with trailing blanks trimmed (what the RFC returns),
+# inserted in REVERSE order to prove the recipe sorts by SEGNUM
+statement ok
+CREATE TEMP TABLE edid4_src AS
+SELECT segnum AS segnum, segnam AS segnam, psgnum AS psgnum, hlevel AS hlevel, rtrim(sdata) AS sdata
+FROM sap_idoc_read('test/fixtures/flight.idoc')
+ORDER BY segnum DESC;
+
+query I
+SELECT count(*) FROM edid4_src;
+----
+2
+
+# step 3 of the recipe, verbatim apart from the target path
+statement ok
+COPY (
+    SELECT raw FROM (
+        SELECT 0 AS ord,
+               sap_idoc_encode_control([
+                   'EDI_DC40', c.MANDT, c.DOCNUM, c.DOCREL, c.STATUS, c.DIRECT, c.OUTMOD, c.EXPRSS, c.TEST,
+                   c.IDOCTP, c.CIMTYP, c.MESTYP, c.MESCOD, c.MESFCT, c.STD, c.STDVRS, c.STDMES,
+                   c.SNDPOR, c.SNDPRT, c.SNDPFC, c.SNDPRN, c.SNDSAD, c.SNDLAD,
+                   c.RCVPOR, c.RCVPRT, c.RCVPFC, c.RCVPRN, c.RCVSAD, c.RCVLAD,
+                   left(COALESCE(regexp_replace(CAST(c.CREDAT AS VARCHAR), '[^0-9]', '', 'g'), ''), 8),
+                   left(COALESCE(regexp_replace(CAST(c.CRETIM AS VARCHAR), '[^0-9]', '', 'g'), ''), 6),
+                   c.REFINT, c.REFGRP, c.REFMES, c.ARCKEY, c.SERIAL]) AS raw
+        FROM edidc_src c
+        UNION ALL
+        SELECT CAST(s.segnum AS INTEGER),
+               sap_idoc_encode_data_record(s.segnam, c.MANDT, CAST(c.DOCNUM AS BIGINT), CAST(s.segnum AS BIGINT),
+                                           CAST(s.psgnum AS BIGINT), CAST(s.hlevel AS INTEGER),
+                                           sap_idoc_encode_sdata([0], [1000], [s.sdata]))
+        FROM edid4_src s, edidc_src c
+    ) ORDER BY ord
+) TO '__TEST_DIR__/from_tables.idoc' (FORMAT sap_idoc);
+
+# the file built from the tables is the real fixture, byte for byte
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/from_tables.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
+
+# ---------------------------------------------------------------------------------------------
+# CREDAT / CRETIM: the same expression must cope with DATE/TIME and with text columns
+# ---------------------------------------------------------------------------------------------
+query T
+SELECT left(COALESCE(regexp_replace(CAST(DATE '2026-10-06' AS VARCHAR), '[^0-9]', '', 'g'), ''), 8);
+----
+20261006
+
+query T
+SELECT left(COALESCE(regexp_replace(CAST('20240101'::VARCHAR AS VARCHAR), '[^0-9]', '', 'g'), ''), 8);
+----
+20240101
+
+query T
+SELECT left(COALESCE(regexp_replace(CAST(NULL::DATE AS VARCHAR), '[^0-9]', '', 'g'), ''), 8);
+----
+(empty)
+
+query T
+SELECT left(COALESCE(regexp_replace(CAST(TIME '09:49:59' AS VARCHAR), '[^0-9]', '', 'g'), ''), 6);
+----
+094959
+
+query T
+SELECT left(COALESCE(regexp_replace(CAST('094959'::VARCHAR AS VARCHAR), '[^0-9]', '', 'g'), ''), 6);
+----
+094959
+
+# ---------------------------------------------------------------------------------------------
+# step 2 parsing: the fixed-width string /SAPDS/RFC_READ_TABLE2 returns per EDID4 row
+# (SEGNUM 6, SEGNAM 30, PSGNUM 6, HLEVEL 2, SDATA the rest, trailing blanks trimmed);
+# a '|' inside SDATA must survive and an empty SDATA must give an empty string
+# ---------------------------------------------------------------------------------------------
+statement ok
+CREATE TEMP TABLE wa_rows AS
+SELECT '000001' || rpad('E1SBO_CRE', 30, ' ') || '000000' || '01' AS WA
+UNION ALL
+SELECT '000002' || rpad('E1BPSBONEW', 30, ' ') || '000001' || '02' || ' leading|pipe  and  gaps';
+
+query ITTTT
+SELECT CAST(substr(u.WA, 1, 6) AS INTEGER), trim(substr(u.WA, 7, 30)), substr(u.WA, 37, 6), substr(u.WA, 43, 2),
+       '[' || substr(u.WA, 45) || ']'
+FROM wa_rows AS u(WA)
+ORDER BY 1;
+----
+1	E1SBO_CRE	000000	01	[]
+2	E1BPSBONEW	000001	02	[ leading|pipe  and  gaps]
+
+# ---------------------------------------------------------------------------------------------
+# step 2b guards: a missing IDoc, an IDoc without segments, duplicate SEGNUMs must fail loudly
+# ---------------------------------------------------------------------------------------------
+statement ok
+CREATE TEMP TABLE empty_edidc AS SELECT * FROM edidc_src WHERE false;
+
+statement error
+SELECT error('IDoc 0000000000000099 not found in EDIDC') WHERE (SELECT count(*) FROM empty_edidc) <> 1;
+----
+not found in EDIDC
+
+statement ok
+CREATE TEMP TABLE empty_edid4 AS SELECT * FROM edid4_src WHERE false;
+
+statement error
+SELECT error('IDoc 0000000000000099 has no EDID4 segments') WHERE (SELECT count(*) FROM empty_edid4) = 0;
+----
+has no EDID4 segments
+
+statement ok
+CREATE TEMP TABLE dup_edid4 AS SELECT * FROM edid4_src UNION ALL SELECT * FROM edid4_src WHERE segnum = '000001';
+
+statement error
+SELECT error('duplicate SEGNUM in EDID4 for IDoc 0000000000000099')
+WHERE (SELECT count(*) - count(DISTINCT segnum) FROM dup_edid4) > 0;
+----
+duplicate SEGNUM
+
+# ... and the guards stay quiet for the good tables
+query I
+SELECT count(*) FROM (SELECT error('x') WHERE (SELECT count(*) FROM edidc_src) <> 1
+                                         OR (SELECT count(*) FROM edid4_src) = 0
+                                         OR (SELECT count(*) - count(DISTINCT segnum) FROM edid4_src) > 0);
+----
+0
