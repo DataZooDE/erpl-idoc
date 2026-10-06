@@ -75,6 +75,11 @@ std::vector<XmlIdoc> ParseIdocXml(const std::string &xml) {
 	if (!root) {
 		throw std::runtime_error("IDoc-XML has no root element");
 	}
+	// A well-formed document has one root; the parser would otherwise just ignore the rest.
+	if (root->NextSiblingElement()) {
+		throw std::runtime_error("IDoc-XML has more than one root element; several IDocs of one basic type go "
+		                         "inside a single root as multiple <IDOC> elements");
+	}
 
 	// The root is the basic type; each <IDOC> is one document. Some renderings put the
 	// <IDOC> directly at the root — handle both.
@@ -152,13 +157,30 @@ static void EmitFields(std::string &out, const std::vector<XmlField> &fields, co
 
 std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 	std::string out = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-	for (const auto &idoc : idocs) {
-		std::string idoctyp = XmlFieldValue(idoc.control, "IDOCTYP");
-		if (idoctyp.empty()) {
-			idoctyp = "IDOC";
+	if (idocs.empty()) {
+		return out;
+	}
+	// SAP's multi-IDoc rendering: one root named after the basic type holding one <IDOC> per document.
+	// A single XML document has a single root, so all IDocs must share the basic type.
+	std::string idoctyp;
+	for (size_t i = 0; i < idocs.size(); i++) {
+		auto t = RTrimValue(XmlFieldValue(idocs[i].control, "IDOCTYP"));
+		if (t.empty()) {
+			t = "IDOC";
 		}
-		idoctyp = RTrimValue(idoctyp);
-		out += "<" + idoctyp + ">\n  <IDOC BEGIN=\"1\">\n";
+		if (i == 0) {
+			idoctyp = t;
+		} else if (t != idoctyp) {
+			throw std::runtime_error("one IDoc basic type per XML document: the file mixes '" + idoctyp + "' and '" + t +
+			                         "'; convert the types separately");
+		}
+	}
+	if (idoctyp.empty()) {
+		idoctyp = "IDOC";
+	}
+	out += "<" + idoctyp + ">\n";
+	for (const auto &idoc : idocs) {
+		out += "  <IDOC BEGIN=\"1\">\n";
 		out += "    <EDI_DC40 SEGMENT=\"1\">\n";
 		EmitFields(out, idoc.control, "      ");
 		out += "    </EDI_DC40>\n";
@@ -183,8 +205,9 @@ std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 			open_levels.push_back(seg.hlevel);
 		}
 		close_to(1);
-		out += "  </IDOC>\n</" + idoctyp + ">\n";
+		out += "  </IDOC>\n";
 	}
+	out += "</" + idoctyp + ">\n";
 	return out;
 }
 

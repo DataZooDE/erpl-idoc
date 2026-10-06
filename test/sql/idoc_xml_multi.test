@@ -1,0 +1,75 @@
+# name: test/sql/idoc_xml_multi.test
+# description: flat<->XML conversion of a file with several IDocs: one well-formed root, no silent drop
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# a flat file with TWO IDocs (the fixture twice)
+statement ok
+COPY (SELECT raw_record FROM (
+        SELECT 0 AS g, record_index, raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc')
+        UNION ALL
+        SELECT 1, record_index, raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc'))
+      ORDER BY g, record_index)
+  TO '__TEST_DIR__/two.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT count(*) FROM sap_idoc_read_control('__TEST_DIR__/two.idoc');
+----
+2
+
+# flat -> XML: ONE root element holding both <IDOC>s (SAP's multi-IDoc rendering)
+statement ok
+COPY (SELECT xml FROM sap_idoc_to_xml('__TEST_DIR__/two.idoc','test/fixtures/flight_dict.csv'))
+  TO '__TEST_DIR__/two.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT document_key FROM sap_idoc_read_xml('__TEST_DIR__/two.xml'));
+----
+2
+
+query I
+SELECT count(*) FROM read_csv('__TEST_DIR__/two.xml', header=false, columns={'l':'VARCHAR'}, delim='\x01', quote='', escape='')
+WHERE l LIKE '<FLIGHTBOOKING_CREATEFROMDAT01>';
+----
+1
+
+# XML -> flat gets BOTH IDocs back, byte-exact
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('__TEST_DIR__/two.xml','test/fixtures/flight_dict.csv')
+      ORDER BY record_index)
+  TO '__TEST_DIR__/two_back.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/two_back.idoc'))
+     = (SELECT content FROM read_blob('__TEST_DIR__/two.idoc'));
+----
+true
+
+# two different basic types cannot share one XML root: error, not an invalid document
+statement ok
+COPY (SELECT CASE WHEN g = 1 AND record_type = 'C'
+                  THEN replace(raw_record::VARCHAR, 'FLIGHTBOOKING_CREATEFROMDAT01', 'FLIGHTBOOKING_CREATEFROMDAT02')::BLOB
+                  ELSE raw_record END
+      FROM (SELECT 0 AS g, record_index, record_type, raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc')
+            UNION ALL
+            SELECT 1, record_index, record_type, raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc'))
+      ORDER BY g, record_index)
+  TO '__TEST_DIR__/mixed.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT xml FROM sap_idoc_to_xml('__TEST_DIR__/mixed.idoc','test/fixtures/flight_dict.csv');
+----
+one IDoc basic type per XML document
+
+# XML with more than one root element used to be read as just the first: now an error
+statement ok
+COPY (SELECT '<?xml version="1.0"?>' || chr(10) ||
+             '<FLIGHTBOOKING_CREATEFROMDAT01><IDOC BEGIN="1"><EDI_DC40 SEGMENT="1"><DOCNUM>1</DOCNUM></EDI_DC40></IDOC></FLIGHTBOOKING_CREATEFROMDAT01>' || chr(10) ||
+             '<FLIGHTBOOKING_CREATEFROMDAT01><IDOC BEGIN="1"><EDI_DC40 SEGMENT="1"><DOCNUM>2</DOCNUM></EDI_DC40></IDOC></FLIGHTBOOKING_CREATEFROMDAT01>')
+  TO '__TEST_DIR__/tworoots.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement error
+SELECT count(*) FROM sap_idoc_xml_to_records('__TEST_DIR__/tworoots.xml','test/fixtures/flight_dict.csv');
+----
+more than one root element

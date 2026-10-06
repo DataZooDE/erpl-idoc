@@ -185,8 +185,9 @@ COPY (SELECT raw_record FROM sap_idoc_xml_to_records('orders.xml','orders.dict.p
 ```
 
 Both directions take **one file path** (no glob) and load the whole file into memory, and they work on
-**one IDoc per file**: `sap_idoc_to_xml` writes a second IDoc as a second root element (not well-formed XML), and
-`sap_idoc_xml_to_records` reads only the first. A segment with data that the dictionary doesn't describe
+**one basic type per XML document**: several IDocs of the same type become one root element named after the
+type holding one `<IDOC>` each (SAP's multi-IDoc rendering); a file that mixes basic types is an error
+(convert the types separately), as is XML with more than one root element. A segment with data that the dictionary doesn't describe
 makes them fail with an error naming the segment — see *Round-trip guarantees* below.
 
 ---
@@ -222,7 +223,7 @@ compute the hierarchy fields (`SEGNUM`, `PSGNUM`, `HLEVEL`) with the template in
 ### 4. Migrate a flat-file interface to IDoc-XML (or back)
 Two systems, two serializations. Convert in one step — `flat → xml → flat` is byte-exact
 when the dictionary describes every segment and covers the SDATA bytes in use — so you can
-switch a port’s format without touching the payload (one IDoc per file).
+switch a port’s format without touching the payload (one basic type per XML document).
 
 ### 5. Typed decode on an air-gapped host
 Fetch the segment dictionary **once** from a connected system, persist it to Parquet,
@@ -407,8 +408,8 @@ Its origin is irrelevant to the parser — a file, a table, a view, or a query a
 - **Generic:** `sap_idoc_read_raw → COPY (FORMAT sap_idoc)` reproduces the input file
   **byte-for-byte**, for any IDoc with fixed-width framing — it never interprets the payload. For an
   LF/CRLF file pass the matching `framing` to `COPY`; a last line without a terminator cannot be reproduced.
-- **Flat ⇄ XML:** `flat → xml → flat` (and `xml → flat`) is byte-exact for a **single, canonically numbered
-  IDoc** — sequential `SEGNUM`, hierarchy-consistent `PSGNUM`, data-record `MANDT`/`DOCNUM` equal to the
+- **Flat ⇄ XML:** `flat → xml → flat` (and `xml → flat`) is byte-exact for **canonically numbered
+  IDocs of one basic type** — sequential `SEGNUM`, hierarchy-consistent `PSGNUM`, data-record `MANDT`/`DOCNUM` equal to the
   control record's, fixed-width framing — **whose segments the dictionary fully describes and whose fields
   cover the SDATA bytes in use.** The XML form carries only the dictionary's fields, trims trailing blanks, and
   the flat side is rebuilt with recomputed `SEGNUM`/`PSGNUM`. Consequences: SDATA bytes no dictionary field
@@ -453,7 +454,7 @@ decode, and IDoc-XML read/write + flat↔XML conversion.
   re-encoded by hand;
 - X12/EDIFACT conversion;
 - business-semantic validation (only dictionary and record-width structure is checked);
-- glob/`LIST`, streaming, parallelism and multi-IDoc files for the **XML** functions (one IDoc per file, in memory);
+- glob/`LIST`, streaming and parallelism for the **XML** functions (one file at a time, in memory; one basic type per XML document);
 - dictionary → `CREATE TABLE` DDL export;
 - a one-call SQL import into SAP (see *Live SAP, cleanly separated* below).
 
