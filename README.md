@@ -92,23 +92,42 @@ FROM sap_idoc_read_segment('booking.idoc', 'E1BPSBONEW', 'flightbooking.dict.par
 
 | Dictionary `datatype` | Column type with `typed := true` |
 |---|---|
-| `DATS` | `DATE` (blank and `00000000` → `NULL`) |
-| `TIMS` | `TIME` (blank → `NULL`) |
-| `DEC`, `CURR`, `QUAN` | `DECIMAL(length, decimals)` **only if the dictionary has a `decimals` column** with a value for the field (trailing minus like `5.000-` is understood); otherwise `VARCHAR` |
+| `DATS` | `DATE` (blank and `00000000` → `NULL`; year `0000` is invalid) |
+| `TIMS` | `TIME` (blank → `NULL`; `000000` is midnight, `240000` is invalid) |
+| `DEC`, `CURR`, `QUAN` | `DECIMAL(max(length, decimals+1), decimals)` **only if the dictionary has a `decimals` column** with a value for the field; otherwise `VARCHAR`. Fields wider than 38 digits also stay `VARCHAR` |
 | `NUMC`, `CHAR`, `LANG`, `UNIT`, `CUKY`, everything else | `VARCHAR` — `NUMC` stays text because leading zeros are significant for keys |
 
 SAP's own field list (`IDOCTYPE_READ_COMPLETE`, and so `sap_idoc_dictionary(…)`) does **not**
-report decimals, so amounts and quantities stay text unless you add a `decimals` column to your
-dictionary (a CSV/Parquet/table column; fields with no value stay text). An invalid value
-(`20261301` as a date, `12x4` as an amount, more fractional digits than `decimals`) raises an error that
-names the field, value, document and segment; `strict := false` reads it as `NULL` instead.
+report decimals, so amounts and quantities stay text until you add a `decimals` column to your
+dictionary. The column name is case-insensitive and may be text in a CSV; a missing or non-numeric
+entry means "not supplied" for that field:
+
+```sql
+CREATE TABLE my_dict AS
+  SELECT d.*, CASE d.field_name WHEN 'MENGE' THEN 3 WHEN 'NETWR' THEN 2 END AS decimals
+  FROM sap_idoc_dictionary(sap_idoc_params('ORDERS05')) d;
+
+SELECT menge, netwr FROM sap_idoc_read_segment('orders.idoc', 'E1EDP01', 'my_dict', typed := true);
+```
+
+DECIMAL text is read **as written**: an explicit decimal point (`1234.50`), an optional sign, and SAP's
+trailing minus (`5.000-`) are understood; there is no implied decimal point (`5` is `5.00`), and
+exponents (`1e3`) and thousands separators (`1,234.50`) are invalid. More fractional digits than
+`decimals` is invalid too — values are never rounded.
+
+An invalid value raises an error naming the field, datatype, value, expected shape, segment, document
+and file; `strict := false` reads it as `NULL` instead. Strict mode checks **every** field of each scanned
+segment, not only the selected columns. `strict` (bad *values*) is unrelated to `lenient` (salvaging a
+*truncated file*), and it is an error without `typed := true`.
 `sap_idoc_read_fields` is unchanged — its single `value` column mixes all fields, so it stays `VARCHAR`.
 
 Typed values write back by formatting them as SAP text — the writer takes strings:
 
 ```sql
--- DATE → 'YYYYMMDD', TIME → 'HHMMSS', DECIMAL → plain text
-strftime(flightdate, '%Y%m%d'), replace(tim::VARCHAR, ':', ''), amt::VARCHAR
+-- DATE → 'YYYYMMDD', TIME → 'HHMMSS', DECIMAL → text; SAP puts the minus of a negative number last
+strftime(flightdate, '%Y%m%d'),
+replace(tim::VARCHAR, ':', ''),
+CASE WHEN qty < 0 THEN abs(qty)::VARCHAR || '-' ELSE qty::VARCHAR END
 ```
 
 ### Generate an IDoc file from SQL
@@ -237,6 +256,10 @@ still rejected). IDoc-XML input is already text and is never re-decoded.
 | `'ascii'` (`us-ascii`) | Every byte must be below `0x80`; anything else fails the query. Use it to detect unexpected high bytes. |
 | `'latin-1'` (`latin1`, `iso-8859-1`) | Byte *N* becomes U+00*N*. This is exactly what SAP does when it reads such a file (`OPEN DATASET … IN LEGACY BINARY MODE`), verified against an A4H system (`test/e2e/m8_encoding.sh`): `0x80` is the control character U+0080, not `€`. |
 | `'cp1252'` (`windows-1252`) | As `latin-1`, except `0x80`–`0x9F` map to `€ ‚ ƒ „ … † ‡ ˆ ‰ Š ‹ Œ Ž ‘ ’ “ ” • – — ˜ ™ š › œ ž Ÿ`. Use it for files produced by Windows tools. SAP itself would read those bytes as latin-1. |
+
+`sap_idoc_read_segment` additionally takes `typed := false` (default; `true` maps `DATS`/`TIMS`/`DEC`
+to `DATE`/`TIME`/`DECIMAL`) and `strict := true` (default; only with `typed := true`) — see
+[Real SQL types](#real-sql-types-typed--true).
 
 The readers are **streaming and parallel**: each file is parsed record-by-record in
 constant memory (never fully buffered), and a glob/`LIST` is read with one thread per

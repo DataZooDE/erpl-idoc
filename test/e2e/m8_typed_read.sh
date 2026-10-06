@@ -21,7 +21,8 @@ HOST_FILE=/tmp/erpl_idoc_e2e.idoc
 cp test/fixtures/flight.idoc "$HOST_FILE"
 
 # 1) Let A4H ingest the file and read it back from its own storage (SAP truth).
-docker exec -i a4h sh -c 'cat > /tmp/erpl_idoc_e2e.idoc' < "$HOST_FILE"
+docker exec -i a4h sh -c 'cat > /tmp/erpl_idoc_e2e.idoc' < "$HOST_FILE" || { echo "FAIL: could not push the IDoc into a4h"; exit 1; }
+docker exec -i a4h sh -c 'cmp -s /tmp/erpl_idoc_e2e.idoc -' < "$HOST_FILE" || { echo "FAIL: a4h copy differs from the fixture"; exit 1; }
 export SAP_PASSWORD="$ERPL_SAP_PASSWORD"
 ADT(){ timeout 120 uvx erpl-adt --host "$ERPL_SAP_ASHOST" --port 50000 --user "$ERPL_SAP_USER" \
         --client "$ERPL_SAP_CLIENT" --password-env SAP_PASSWORD "$@"; }

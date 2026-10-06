@@ -56,10 +56,26 @@ static void ApplyTypedMapping(TypedFieldRule &rule) {
 	} else if (dt == "TIMS") {
 		rule.kind = TypedFieldRule::Kind::TIME;
 		rule.type = LogicalType::TIME;
-	} else if ((dt == "DEC" || dt == "CURR" || dt == "QUAN") && rule.decimals >= 0 && rule.decimals <= 38) {
-		auto width = std::min<int64_t>(38, std::max<int64_t>(rule.length, rule.decimals + 1));
-		rule.kind = TypedFieldRule::Kind::DECIMAL;
-		rule.type = LogicalType::DECIMAL(static_cast<uint8_t>(width), static_cast<uint8_t>(rule.decimals));
+	} else if ((dt == "DEC" || dt == "CURR" || dt == "QUAN") && rule.decimals >= 0) {
+		// precision covers the field's external length (and at least decimals + 1 digits); a field that
+		// cannot fit DuckDB's DECIMAL(38) stays text rather than being silently capped
+		auto width = std::max<int64_t>(rule.length, rule.decimals + 1);
+		if (width <= 38) {
+			rule.kind = TypedFieldRule::Kind::DECIMAL;
+			rule.type = LogicalType::DECIMAL(static_cast<uint8_t>(width), static_cast<uint8_t>(rule.decimals));
+		}
+	}
+}
+
+// What a valid value looks like, for the strict-mode error message.
+static std::string ExpectedShape(const TypedFieldRule &f) {
+	switch (f.kind) {
+	case TypedFieldRule::Kind::DATE:
+		return "a valid date as YYYYMMDD";
+	case TypedFieldRule::Kind::TIME:
+		return "a valid time as HHMMSS, 000000-235959";
+	default:
+		return "a decimal with at most " + std::to_string(f.decimals) + " fractional digits";
 	}
 }
 
@@ -86,7 +102,7 @@ static bool ParseTypedValue(const TypedFieldRule &f, const std::string &raw, Val
 			return false;
 		}
 		int32_t y = std::stoi(text.substr(0, 4)), m = std::stoi(text.substr(4, 2)), d = std::stoi(text.substr(6, 2));
-		if (!Date::IsValid(y, m, d)) {
+		if (y < 1 || !Date::IsValid(y, m, d)) {
 			return false;
 		}
 		out = Value::DATE(Date::FromDate(y, m, d));
@@ -97,7 +113,7 @@ static bool ParseTypedValue(const TypedFieldRule &f, const std::string &raw, Val
 			return false;
 		}
 		int32_t h = std::stoi(text.substr(0, 2)), mi = std::stoi(text.substr(2, 2)), sec = std::stoi(text.substr(4, 2));
-		if (!Time::IsValidTime(h, mi, sec, 0)) {
+		if (h > 23 || !Time::IsValidTime(h, mi, sec, 0)) { // DuckDB accepts 24:00:00; SAP TIMS does not
 			return false;
 		}
 		out = Value::TIME(Time::FromTime(h, mi, sec, 0));
@@ -165,6 +181,9 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		bind->typed = np["typed"].GetValue<bool>();
 	}
 	if (np.count("strict") && !np["strict"].IsNull()) {
+		if (!bind->typed) {
+			throw BinderException("sap_idoc_read_segment: strict requires typed := true");
+		}
 		bind->strict = np["strict"].GetValue<bool>();
 	}
 
@@ -172,11 +191,12 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	// dictionary column (SAP's own field list does not carry it); it scales DEC/CURR/QUAN when typed.
 	Connection con(*context.db);
 	string decimals_expr = "NULL";
-	auto probe = con.Query("SELECT * FROM " + DictSource(dict) + " LIMIT 0");
-	if (!probe->HasError()) {
+	auto probe = bind->typed ? con.Query("SELECT * FROM " + DictSource(dict) + " LIMIT 0") : nullptr;
+	if (probe && !probe->HasError()) {
 		for (auto &col : probe->names) {
 			if (UpperAscii(col) == "DECIMALS") {
-				decimals_expr = "\"" + col + "\"";
+				// TRY_CAST: a CSV may type the column as text; a non-numeric entry just means "not supplied"
+				decimals_expr = "TRY_CAST(\"" + StringUtil::Replace(col, "\"", "\"\"") + "\" AS BIGINT)";
 			}
 		}
 	}
@@ -262,10 +282,11 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 			if (!ParseTypedValue(f, text, value)) {
 				if (bind.strict) {
 					throw InvalidInputException(
-					    "sap_idoc_read_segment: field '%s' (%s) has invalid value '%s' (document %d, segment %s); "
-					    "pass strict := false to read it as NULL",
-					    f.name, f.datatype, RTrim(text), static_cast<int64_t>(rec.document_key),
-					    RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[3])));
+					    "sap_idoc_read_segment: field '%s' (%s) has invalid value '%s' (expected %s) in segment %s #%s "
+					    "of document %d in '%s'; pass strict := false to read it as NULL",
+					    f.name, f.datatype, RTrim(text), ExpectedShape(f), bind.segnam,
+					    RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[3])), static_cast<int64_t>(rec.document_key),
+					    l.current_file);
 				}
 				value = Value(f.type);
 			}
