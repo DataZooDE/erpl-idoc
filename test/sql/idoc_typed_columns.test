@@ -1,0 +1,271 @@
+# name: test/sql/idoc_typed_columns.test
+# description: sap_idoc_read_segment(typed := true) maps DATS/TIMS and dictionary-scaled DEC/QUAN/CURR to SQL types
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# --- default behaviour is unchanged: every column is VARCHAR ------------------------
+query TT
+SELECT typeof(flightdate), flightdate
+FROM sap_idoc_read_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv');
+----
+VARCHAR	20260715
+
+# --- typed := true on the real fixture: DATS -> DATE, NUMC/CHAR stay text ------------
+query TTTTT
+SELECT typeof(flightdate), flightdate, typeof(connectid), connectid, passbirth
+FROM sap_idoc_read_segment('test/fixtures/flight.idoc', 'E1BPSBONEW', 'test/fixtures/flight_dict.csv', typed := true);
+----
+DATE	2026-07-15	VARCHAR	0400	1980-01-01
+
+# --- a dictionary that supplies `decimals` (SAP's PT_FIELDS does not) ------------------
+statement ok
+CREATE TABLE typed_dict AS SELECT * FROM (VALUES
+  ('ZTYPED', 1, 'DAT', 0,  8, 'DATS', NULL),
+  ('ZTYPED', 2, 'TIM', 8,  6, 'TIMS', NULL),
+  ('ZTYPED', 3, 'AMT', 14, 12, 'DEC',  2),
+  ('ZTYPED', 4, 'QTY', 26, 10, 'QUAN', 3),
+  ('ZTYPED', 5, 'NOD', 36, 8,  'DEC',  NULL),
+  ('ZTYPED', 6, 'ID',  44, 6,  'NUMC', NULL),
+  ('ZTYPED', 7, 'TXT', 50, 5,  'CHAR', NULL)
+) t(segnam, field_pos, field_name, "offset", length, datatype, decimals);
+
+# an IDoc: the fixture's control record + ZTYPED data records
+#   1: fully populated   2: blanks, negative quantity with trailing minus
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZTYPED','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,36,44,50],[8,6,12,10,8,6,5],
+        ['20261231','235959','1234.50','12.345','9.9','000042','abc']))
+    UNION ALL
+    SELECT 2, sap_idoc_encode_data_record('ZTYPED','001',8,2,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,36,44,50],[8,6,12,10,8,6,5],
+        ['00000000','','','5.000-','','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/typed_good.idoc' (FORMAT sap_idoc);
+
+query IIIIIIII
+SELECT segnum::INT, dat, tim, amt, qty, nod, id, txt
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_good.idoc', 'ZTYPED', 'typed_dict', typed := true)
+ORDER BY 1;
+----
+1	2026-12-31	23:59:59	1234.50	12.345	9.9	000042	abc
+2	NULL	NULL	NULL	-5.000	(empty)	(empty)	(empty)
+
+# the SQL types themselves; DEC without a `decimals` value stays VARCHAR (nothing is invented)
+query TTTTTT
+SELECT typeof(dat), typeof(tim), typeof(amt), typeof(qty), typeof(nod), typeof(id)
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_good.idoc', 'ZTYPED', 'typed_dict', typed := true) LIMIT 1;
+----
+DATE	TIME	DECIMAL(12,2)	DECIMAL(10,3)	VARCHAR	VARCHAR
+
+# without typed := true the same dictionary yields text only
+query TTT
+SELECT typeof(dat), typeof(amt), amt
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_good.idoc', 'ZTYPED', 'typed_dict') WHERE segnum::INT = 1;
+----
+VARCHAR	VARCHAR	1234.50
+
+# --- bad values: strict (default) errors with a precise message, strict := false -> NULL
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZTYPED','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,36,44,50],[8,6,12,10,8,6,5],
+        ['20261301','250000','12x4','1.5','','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/typed_bad.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT dat FROM sap_idoc_read_segment('__TEST_DIR__/typed_bad.idoc', 'ZTYPED', 'typed_dict', typed := true);
+----
+field 'DAT' (DATS) has invalid value '20261301'
+
+query TTTT
+SELECT dat, tim, amt, qty
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_bad.idoc', 'ZTYPED', 'typed_dict', typed := true, strict := false);
+----
+NULL	NULL	NULL	1.500
+
+# --- round trip: typed read -> format back to SAP text -> re-encode == original SDATA --
+query I
+SELECT sap_idoc_encode_sdata([0,8,14,26,36,44,50],[8,6,12,10,8,6,5],
+         [strftime(dat,'%Y%m%d'), replace(tim::VARCHAR, ':', ''), amt::VARCHAR, qty::VARCHAR, nod, id, txt])
+     = sap_idoc_encode_sdata([0,8,14,26,36,44,50],[8,6,12,10,8,6,5],
+         ['20261231','235959','1234.50','12.345','9.9','000042','abc'])
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_good.idoc', 'ZTYPED', 'typed_dict', typed := true)
+WHERE segnum::INT = 1;
+----
+true
+
+# ===================== crew-review hardening ==========================================
+
+# dictionary for boundary checks; `Decimals` is deliberately mixed-case and VARCHAR (as a CSV may give it)
+statement ok
+CREATE TABLE edge_dict AS SELECT * FROM (VALUES
+  ('ZEDGE', 1, 'DAT', 0,  8,  'DATS', NULL),
+  ('ZEDGE', 2, 'TIM', 8,  6,  'TIMS', NULL),
+  ('ZEDGE', 3, 'AMT', 14, 12, 'CURR', '2'),
+  ('ZEDGE', 4, 'WIDE', 26, 40, 'DEC',  '2'),
+  ('ZEDGE', 5, 'SMALL', 66, 3, 'DEC',  '5')
+) t(segnam, field_pos, field_name, "offset", length, datatype, "Decimals");
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    -- leap day, midnight, point-less amount, wider-than-DECIMAL(38) field, scale greater than length
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['20240229','000000','5','7','0.1']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_ok.idoc' (FORMAT sap_idoc);
+
+query TTTTT
+SELECT dat, tim, amt, wide, small
+FROM sap_idoc_read_segment('__TEST_DIR__/edge_ok.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+2024-02-29	00:00:00	5.00	7	0.10000
+
+# CURR is DECIMAL too; a DEC wider than 38 digits cannot be a DECIMAL and stays text (never silently capped);
+# scale > length widens the precision (DECIMAL(6,5)) instead of failing
+query TTT
+SELECT typeof(amt), typeof(wide), typeof(small)
+FROM sap_idoc_read_segment('__TEST_DIR__/edge_ok.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+DECIMAL(12,2)	VARCHAR	DECIMAL(6,5)
+
+# a malformed `decimals` value must not break an UNTYPED read (it is only consulted when typed := true)
+statement ok
+CREATE TABLE bad_dec_dict AS SELECT * FROM (VALUES
+  ('ZEDGE', 1, 'DAT', 0, 8, 'DATS', 'abc')
+) t(segnam, field_pos, field_name, "offset", length, datatype, decimals);
+
+query T
+SELECT dat FROM sap_idoc_read_segment('__TEST_DIR__/edge_ok.idoc', 'ZEDGE', 'bad_dec_dict');
+----
+20240229
+
+# each invalid value fails strictly with a message naming field, datatype, value and the expected shape.
+# One file per case: strict mode checks every field of every scanned segment, even unselected columns.
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['20230229','','','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_bad_1.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT dat FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_1.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+field 'DAT' (DATS) has invalid value '20230229' (expected a valid date as YYYYMMDD)
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['','240000','','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_bad_2.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT tim FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_2.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+field 'TIM' (TIMS) has invalid value '240000' (expected a valid time as HHMMSS, 000000-235959)
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['00000101','','','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_bad_3.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT dat FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_3.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+field 'DAT' (DATS) has invalid value '00000101'
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['','','1.234','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_bad_4.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT amt FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_4.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+(expected a decimal with at most 2 fractional digits)
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['','','1e3','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_bad_5.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT amt FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_5.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+field 'AMT' (CURR) has invalid value '1e3'
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZEDGE','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,66],[8,6,12,40,3],['','','1,234.50','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/edge_bad_6.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT amt FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_6.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+field 'AMT' (CURR) has invalid value '1,234.50'
+
+# the error also says where: segment type and number, and the file
+statement error
+SELECT dat FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_1.idoc', 'ZEDGE', 'edge_dict', typed := true);
+----
+segment ZEDGE #000001
+
+# strict := false turns every one of them into NULL (glob over all six files)
+query I
+SELECT count(*) FROM sap_idoc_read_segment('__TEST_DIR__/edge_bad_*.idoc', 'ZEDGE', 'edge_dict', typed := true, strict := false)
+WHERE dat IS NULL AND tim IS NULL AND amt IS NULL;
+----
+6
+
+# `strict` is meaningless without `typed`: say so instead of silently ignoring it
+statement error
+SELECT * FROM sap_idoc_read_segment('__TEST_DIR__/edge_ok.idoc', 'ZEDGE', 'edge_dict', strict := false);
+----
+strict requires typed := true
+
+# negative quantities: SAP writes a trailing minus; the documented write-back reproduces it
+query TT
+SELECT qty, CASE WHEN qty < 0 THEN abs(qty)::VARCHAR || '-' ELSE qty::VARCHAR END
+FROM sap_idoc_read_segment('__TEST_DIR__/typed_good.idoc', 'ZTYPED', 'typed_dict', typed := true)
+WHERE qty < 0;
+----
+-5.000	5.000-

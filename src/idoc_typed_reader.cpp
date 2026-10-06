@@ -1,6 +1,8 @@
 #include "duckdb.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/materialized_query_result.hpp"
+#include "duckdb/common/types/time.hpp"
+#include "duckdb/common/types/date.hpp"
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
@@ -9,6 +11,7 @@
 #include "idoc_doc.hpp"
 #include "telemetry.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <map>
 #include "erpl_idoc_banner.hpp"
@@ -28,7 +31,116 @@ struct TypedFieldRule {
 	int64_t length;
 	std::string datatype;
 	int64_t field_pos = 0; // used by sap_idoc_read_fields (long form)
+	// sap_idoc_read_segment(typed := true): SQL type this field decodes to.
+	enum class Kind { TEXT, DATE, TIME, DECIMAL };
+	Kind kind = Kind::TEXT;
+	LogicalType type = LogicalType::VARCHAR;
+	int64_t decimals = -1; // from the dictionary's optional `decimals` column; -1 = not supplied
 };
+
+static std::string UpperAscii(std::string s) {
+	for (auto &c : s) {
+		c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+	}
+	return s;
+}
+
+// Map a SAP DDIC datatype to a SQL type. SAP's IDOCTYPE_READ_COMPLETE reports no decimals, so
+// DEC/CURR/QUAN only become DECIMAL when the dictionary supplies them; otherwise they stay text.
+// NUMC stays text on purpose: leading zeros are significant for keys.
+static void ApplyTypedMapping(TypedFieldRule &rule) {
+	auto dt = UpperAscii(rule.datatype);
+	if (dt == "DATS") {
+		rule.kind = TypedFieldRule::Kind::DATE;
+		rule.type = LogicalType::DATE;
+	} else if (dt == "TIMS") {
+		rule.kind = TypedFieldRule::Kind::TIME;
+		rule.type = LogicalType::TIME;
+	} else if ((dt == "DEC" || dt == "CURR" || dt == "QUAN") && rule.decimals >= 0) {
+		// precision covers the field's external length (and at least decimals + 1 digits); a field that
+		// cannot fit DuckDB's DECIMAL(38) stays text rather than being silently capped
+		auto width = std::max<int64_t>(rule.length, rule.decimals + 1);
+		if (width <= 38) {
+			rule.kind = TypedFieldRule::Kind::DECIMAL;
+			rule.type = LogicalType::DECIMAL(static_cast<uint8_t>(width), static_cast<uint8_t>(rule.decimals));
+		}
+	}
+}
+
+// What a valid value looks like, for the strict-mode error message.
+static std::string ExpectedShape(const TypedFieldRule &f) {
+	switch (f.kind) {
+	case TypedFieldRule::Kind::DATE:
+		return "a valid date as YYYYMMDD";
+	case TypedFieldRule::Kind::TIME:
+		return "a valid time as HHMMSS, 000000-235959";
+	default:
+		return "a decimal with at most " + std::to_string(f.decimals) + " fractional digits";
+	}
+}
+
+static bool AllDigits(const std::string &s) {
+	return !s.empty() && std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
+// Parse the (already decoded) text of one field. Returns false when the text is not a valid value
+// of the field's type; blank text and the all-zero SAP date are a valid NULL.
+static bool ParseTypedValue(const TypedFieldRule &f, const std::string &raw, Value &out) {
+	auto text = RTrim(raw);
+	size_t lead = text.find_first_not_of(' ');
+	text = lead == std::string::npos ? std::string() : text.substr(lead);
+	out = Value(f.type); // NULL of the column type
+	if (text.empty()) {
+		return true;
+	}
+	switch (f.kind) {
+	case TypedFieldRule::Kind::DATE: {
+		if (text == "00000000") {
+			return true;
+		}
+		if (text.size() != 8 || !AllDigits(text)) {
+			return false;
+		}
+		int32_t y = std::stoi(text.substr(0, 4)), m = std::stoi(text.substr(4, 2)), d = std::stoi(text.substr(6, 2));
+		if (y < 1 || !Date::IsValid(y, m, d)) {
+			return false;
+		}
+		out = Value::DATE(Date::FromDate(y, m, d));
+		return true;
+	}
+	case TypedFieldRule::Kind::TIME: {
+		if (text.size() != 6 || !AllDigits(text)) {
+			return false;
+		}
+		int32_t h = std::stoi(text.substr(0, 2)), mi = std::stoi(text.substr(2, 2)), sec = std::stoi(text.substr(4, 2));
+		if (h > 23 || !Time::IsValidTime(h, mi, sec, 0)) { // DuckDB accepts 24:00:00; SAP TIMS does not
+			return false;
+		}
+		out = Value::TIME(Time::FromTime(h, mi, sec, 0));
+		return true;
+	}
+	case TypedFieldRule::Kind::DECIMAL: {
+		// SAP writes a trailing minus ("5.000-"); a leading '+' is tolerated.
+		if (text.back() == '-') {
+			text = "-" + text.substr(0, text.size() - 1);
+		} else if (text.front() == '+') {
+			text.erase(0, 1);
+		}
+		if (text.find_first_not_of("-.0123456789") != std::string::npos) {
+			return false;
+		}
+		// never round silently: more fractional digits than the dictionary's scale is invalid
+		auto dot = text.find('.');
+		if (dot != std::string::npos && static_cast<int64_t>(text.size() - dot - 1) > f.decimals) {
+			return false;
+		}
+		string error;
+		return Value(text).DefaultTryCastAs(f.type, out, &error, true);
+	}
+	default:
+		return false;
+	}
+}
 
 struct ReadSegmentBindData : public TableFunctionData {
 	vector<std::string> files;
@@ -38,6 +150,8 @@ struct ReadSegmentBindData : public TableFunctionData {
 	bool lenient = false;
 	bool with_filename = false;
 	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
+	bool typed = false;
+	bool strict = true;
 	vector<TypedFieldRule> fields;
 };
 
@@ -63,11 +177,31 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	if (np.count("filename") && !np["filename"].IsNull()) {
 		bind->with_filename = np["filename"].GetValue<bool>();
 	}
+	if (np.count("typed") && !np["typed"].IsNull()) {
+		bind->typed = np["typed"].GetValue<bool>();
+	}
+	if (np.count("strict") && !np["strict"].IsNull()) {
+		if (!bind->typed) {
+			throw BinderException("sap_idoc_read_segment: strict requires typed := true");
+		}
+		bind->strict = np["strict"].GetValue<bool>();
+	}
 
-	// Load the slicing rules for this segment from the dictionary relation.
-	auto query = "SELECT field_name, \"offset\", length, datatype FROM " + DictSource(dict) +
-	             " WHERE segnam = '" + DictSqlEscape(bind->segnam) + "' ORDER BY field_pos";
+	// Load the slicing rules for this segment from the dictionary relation. `decimals` is an optional
+	// dictionary column (SAP's own field list does not carry it); it scales DEC/CURR/QUAN when typed.
 	Connection con(*context.db);
+	string decimals_expr = "NULL";
+	auto probe = bind->typed ? con.Query("SELECT * FROM " + DictSource(dict) + " LIMIT 0") : nullptr;
+	if (probe && !probe->HasError()) {
+		for (auto &col : probe->names) {
+			if (UpperAscii(col) == "DECIMALS") {
+				// TRY_CAST: a CSV may type the column as text; a non-numeric entry just means "not supplied"
+				decimals_expr = "TRY_CAST(\"" + StringUtil::Replace(col, "\"", "\"\"") + "\" AS BIGINT)";
+			}
+		}
+	}
+	auto query = "SELECT field_name, \"offset\", length, datatype, " + decimals_expr + " FROM " + DictSource(dict) +
+	             " WHERE segnam = '" + DictSqlEscape(bind->segnam) + "' ORDER BY field_pos";
 	auto result = con.Query(query);
 	if (result->HasError()) {
 		throw BinderException("sap_idoc_read_segment: failed to read dictionary: " + result->GetError());
@@ -85,9 +219,14 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		rule.length = result->GetValue(2, i).GetValue<int64_t>();
 		auto dt = result->GetValue(3, i);
 		rule.datatype = dt.IsNull() ? "" : dt.ToString();
+		auto decimals = result->GetValue(4, i);
+		rule.decimals = decimals.IsNull() ? -1 : decimals.GetValue<int64_t>();
 		if (rule.offset < 0 || rule.length < 0 || rule.offset > static_cast<int64_t>(erpl_idoc::SDATA_LEN) ||
 		    rule.length > static_cast<int64_t>(erpl_idoc::SDATA_LEN) - rule.offset) {
 			throw BinderException("sap_idoc_read_segment: field '%s' offset/length out of SDATA bounds", rule.name);
+		}
+		if (bind->typed) {
+			ApplyTypedMapping(rule);
 		}
 		// lower-case the column name (SAP dict names are upper-case)
 		std::string lower;
@@ -95,7 +234,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 			lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
 		}
 		names.push_back(lower);
-		return_types.push_back(LogicalType::VARCHAR); // typed values as strings (acceptance #3)
+		return_types.push_back(rule.type); // VARCHAR unless typed := true maps this field's datatype
 		bind->fields.push_back(std::move(rule));
 	}
 	if (bind->with_filename) {
@@ -134,7 +273,24 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 			auto &f = bind.fields[i];
 			std::string raw = sdata.substr(f.offset, f.length);
 			// decode per the source codepage, then trim trailing pad spaces
-			output.SetValue(2 + i, out_row, Value(RTrim(erpl_idoc::DecodeText(raw, bind.encoding))));
+			auto text = erpl_idoc::DecodeText(raw, bind.encoding);
+			if (f.kind == TypedFieldRule::Kind::TEXT) {
+				output.SetValue(2 + i, out_row, Value(RTrim(text)));
+				continue;
+			}
+			Value value;
+			if (!ParseTypedValue(f, text, value)) {
+				if (bind.strict) {
+					throw InvalidInputException(
+					    "sap_idoc_read_segment: field '%s' (%s) has invalid value '%s' (expected %s) in segment %s #%s "
+					    "of document %d in '%s'; pass strict := false to read it as NULL",
+					    f.name, f.datatype, RTrim(text), ExpectedShape(f), bind.segnam,
+					    RTrim(GetFieldRaw(rec.bytes, EDI_DD40_FIELDS[3])), static_cast<int64_t>(rec.document_key),
+					    l.current_file);
+				}
+				value = Value(f.type);
+			}
+			output.SetValue(2 + i, out_row, value);
 		}
 		if (bind.with_filename) {
 			output.SetValue(output.ColumnCount() - 1, out_row, Value(l.current_file));
@@ -297,17 +453,23 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
 			f.named_parameters["encoding"] = LogicalType::VARCHAR;
 			f.named_parameters["filename"] = LogicalType::BOOLEAN;
+			f.named_parameters["typed"] = LogicalType::BOOLEAN;
+			f.named_parameters["strict"] = LogicalType::BOOLEAN;
 			set.AddFunction(std::move(f));
 		}
 		RegisterDocTableFunctionSet(
 		    loader, std::move(set),
-		    "Typed read of one IDoc segment type: split each segment's SDATA into named, typed columns using a "
-		    "segment dictionary. Accepts a single path, a glob, or a LIST of paths (+ 'filename := true'). 'dict' is "
-		    "the dictionary source — a .csv/.parquet path, a table/view name, or a relation expression (SPEC B4 "
-		    "columns: segnam, field_pos, field_name, offset, length, datatype).",
+		    "Read one IDoc segment type: split each segment's SDATA into named columns using a segment "
+		    "dictionary. Columns are VARCHAR by default; 'typed := true' maps DATS to DATE, TIMS to TIME and "
+		    "DEC/CURR/QUAN to DECIMAL (only where the dictionary supplies a 'decimals' column; NUMC and CHAR stay "
+		    "text). An invalid value raises an error; 'strict := false' reads it as NULL instead. Accepts a single "
+		    "path, a glob, or a LIST of paths (+ 'filename := true'). 'dict' is the dictionary source — a "
+		    ".csv/.parquet path, a table/view name, or a relation expression (SPEC B4 columns: segnam, field_pos, "
+		    "field_name, offset, length, datatype [, decimals]).",
 		    {"SELECT airlineid, flightdate FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv')",
+		     "SELECT flightdate FROM sap_idoc_read_segment('flight.idoc', 'E1BPSBONEW', 'flight_dict.csv', typed := true)",
 		     "SELECT * FROM sap_idoc_read_segment('corpus/*.idoc', 'E1BPSBONEW', 'dict_view')"},
-		    {"path", "segnam", "dict", "filename", "encoding", "lenient", "framing"});
+		    {"path", "segnam", "dict", "filename", "encoding", "lenient", "framing", "typed", "strict"});
 	}
 	{
 		TableFunctionSet set("sap_idoc_read_fields");

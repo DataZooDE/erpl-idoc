@@ -78,7 +78,7 @@ SELECT DISTINCT parameters FROM duckdb_functions() WHERE function_name = 'sap_id
 query I
 SELECT DISTINCT parameters FROM duckdb_functions() WHERE function_name = 'sap_idoc_read_segment';
 ----
-[path, segnam, dict, filename, encoding, lenient, framing]
+[path, segnam, dict, filename, encoding, lenient, framing, typed, strict]
 
 query I
 SELECT DISTINCT parameters FROM duckdb_functions() WHERE function_name = 'sap_idoc_read_fields';
