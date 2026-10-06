@@ -59,8 +59,7 @@ That’s it — no SAP connection required to read, write, or convert IDoc files
 
 CI builds and deploys the extension for **DuckDB v1.5.6** and the **v1.4.5 LTS** line on `linux_amd64`,
 `linux_arm64`, `osx_amd64`, `osx_arm64` and `windows_amd64`. The release gate installs the built artifact into
-the official DuckDB CLI and calls a function on `linux_amd64`, `osx_arm64` and `windows_amd64`; the other
-platforms are built but not smoke-tested. WebAssembly and the `windows_amd64_mingw`/`rtools` builds are not
+the official DuckDB CLI and calls a function on every one of those platforms. WebAssembly and the `windows_amd64_mingw`/`rtools` builds are not
 published. Workflow: `.github/workflows/MainDistributionPipeline.yml`. To build from source, see the section at the end.
 
 ---
