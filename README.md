@@ -26,8 +26,9 @@ composes with `erpl_rfc` when you want live-SAP round trips.
 ## ✨ Highlights
 
 - **Read any IDoc file as a table** — one `SELECT` over a flat IDoc or IDoc-XML file.
-- **Typed decode** — split the opaque 1000-char `SDATA` into named, typed columns via a
-  segment dictionary. The control record (`EDI_DC40`, all 36 fields) reads typed too.
+- **Typed decode** — split the opaque 1000-char `SDATA` into named columns via a
+  segment dictionary (`VARCHAR`, or real `DATE`/`TIME`/`DECIMAL` with `typed := true`).
+  The control record (`EDI_DC40`, all 36 fields) reads as named columns too.
 - **Write byte-valid IDocs from SQL** — `COPY (…) TO 'x.idoc' (FORMAT sap_idoc)`; the
   writer recomputes derived fields (`SEGNUM`, `PSGNUM`, `HLEVEL`, lengths).
 - **Flat ⇄ IDoc-XML conversion** — modernize a flat interface to XML or vice versa,
@@ -76,6 +77,38 @@ FROM sap_idoc_read_control('orders.idoc');
 SELECT airlineid, flightdate, customerid, class, passname
 FROM sap_idoc_read_segment('booking.idoc', 'E1BPSBONEW', 'flightbooking.dict.parquet');
 -- LH | 20260715 | 00000042 | Y | MUELLER
+```
+
+#### Real SQL types: `typed := true`
+
+By default every column is `VARCHAR` — exactly the SAP text, trailing pad trimmed. Add
+`typed := true` to get SQL types for the fields where that is unambiguous:
+
+```sql
+SELECT flightdate, passbirth                       -- DATE, DATE
+FROM sap_idoc_read_segment('booking.idoc', 'E1BPSBONEW', 'flightbooking.dict.parquet', typed := true);
+-- 2026-07-15 | 1980-01-01
+```
+
+| Dictionary `datatype` | Column type with `typed := true` |
+|---|---|
+| `DATS` | `DATE` (blank and `00000000` → `NULL`) |
+| `TIMS` | `TIME` (blank → `NULL`) |
+| `DEC`, `CURR`, `QUAN` | `DECIMAL(length, decimals)` **only if the dictionary has a `decimals` column** with a value for the field (trailing minus like `5.000-` is understood); otherwise `VARCHAR` |
+| `NUMC`, `CHAR`, `LANG`, `UNIT`, `CUKY`, everything else | `VARCHAR` — `NUMC` stays text because leading zeros are significant for keys |
+
+SAP's own field list (`IDOCTYPE_READ_COMPLETE`, and so `sap_idoc_dictionary(…)`) does **not**
+report decimals, so amounts and quantities stay text unless you add a `decimals` column to your
+dictionary (a CSV/Parquet/table column; fields with no value stay text). An invalid value
+(`20261301` as a date, `12x4` as an amount, more fractional digits than `decimals`) raises an error that
+names the field, value, document and segment; `strict := false` reads it as `NULL` instead.
+`sap_idoc_read_fields` is unchanged — its single `value` column mixes all fields, so it stays `VARCHAR`.
+
+Typed values write back by formatting them as SAP text — the writer takes strings:
+
+```sql
+-- DATE → 'YYYYMMDD', TIME → 'HHMMSS', DECIMAL → plain text
+strftime(flightdate, '%Y%m%d'), replace(tim::VARCHAR, ':', ''), amt::VARCHAR
 ```
 
 ### Generate an IDoc file from SQL
@@ -161,7 +194,7 @@ SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sou
 |---|---|
 | `sap_idoc_read(path [, framing, lenient, encoding])` | generic long rows: `document_key, docnum, segnum, segnam, psgnum, hlevel, mandt, sdata` |
 | `sap_idoc_read_control(path [, …])` | the control record — all 36 `EDI_DC40` fields, typed (flat **or** XML) |
-| `sap_idoc_read_segment(path, segnam, dict [, …])` | typed columns for one segment type, sliced from `SDATA` per the dictionary |
+| `sap_idoc_read_segment(path, segnam, dict [, typed, strict, …])` | named columns for one segment type, sliced from `SDATA` per the dictionary (`VARCHAR`; `typed := true` for `DATE`/`TIME`/`DECIMAL`) |
 | `sap_idoc_read_fields(path, dict [, …])` | **every field of every record** in one call — long rows: `document_key, segnum, psgnum, hlevel, segnam, field_pos, field_name, datatype, value` |
 | `sap_idoc_read_raw(path [, …])` | one row per physical record with exact bytes — the byte-exact writer source |
 | `sap_idoc_read_xml(path)` | generic long rows from an IDoc-XML file (self-describing; no dictionary) |
