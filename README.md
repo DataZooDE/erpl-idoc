@@ -1,7 +1,7 @@
 <a name="top"></a>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
-[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.4+-green.svg)](https://duckdb.org)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.4.5%20%7C%201.5.6-green.svg)](https://duckdb.org)
 [![Community Extension](https://img.shields.io/badge/DuckDB-Community%20Extension-informational.svg)](https://duckdb.org/community_extensions/)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
@@ -10,7 +10,7 @@
 **Turn SAP IDoc files into SQL tables — and SQL back into byte-valid IDoc files.**
 `erpl_idoc` is a DuckDB extension for the SAP **IDoc** (Intermediate Document) format:
 the fixed-width flat files and the self-describing IDoc-XML that ALE/EDI interfaces
-exchange every day. Parse them, decode the opaque `SDATA` into typed columns, generate
+exchange every day. Parse them, decode the opaque `SDATA` into named columns, generate
 new IDocs from a query, and convert flat ⇄ XML — all in plain SQL, all offline. It’s the
 document/EDI layer of the **erpl** SAP family (`erpl_rfc`, `erpl_odp`, `erpl_bics`), and
 composes with `erpl_rfc` when you want live-SAP round trips.
@@ -26,20 +26,23 @@ composes with `erpl_rfc` when you want live-SAP round trips.
 ## ✨ Highlights
 
 - **Read any IDoc file as a table** — one `SELECT` over a flat IDoc or IDoc-XML file.
-- **Typed decode** — split the opaque 1000-char `SDATA` into named columns via a
-  segment dictionary (`VARCHAR`, or real `DATE`/`TIME`/`DECIMAL` with `typed := true`).
+- **Dictionary decode** — split the opaque 1000-char `SDATA` into named columns via a
+  segment dictionary (text by default, or real `DATE`/`TIME`/`DECIMAL` with `typed := true`).
   The control record (`EDI_DC40`, all 36 fields) reads as named columns too.
-- **Write byte-valid IDocs from SQL** — `COPY (…) TO 'x.idoc' (FORMAT sap_idoc)`; the
-  writer recomputes derived fields (`SEGNUM`, `PSGNUM`, `HLEVEL`, lengths).
-- **Flat ⇄ IDoc-XML conversion** — modernize a flat interface to XML or vice versa,
-  losslessly.
-- **Byte-exact round trips** — `read → write` reproduces the input file bit-for-bit.
+- **Write byte-valid IDocs from SQL** — `COPY (…) TO 'x.idoc' (FORMAT sap_idoc)` writes the
+  records you give it and checks their widths. The encoders pad fields to their lengths; you
+  supply the hierarchy (`SEGNUM`, `PSGNUM`, `HLEVEL`) — see
+  [Generate an IDoc from scratch](#generate-an-idoc-from-sql-from-scratch).
+- **Flat ⇄ IDoc-XML conversion** — modernize a flat interface to XML or vice versa. Exact
+  for IDocs whose segments are fully described by the dictionary (see
+  [Round-trip guarantees](#-round-trip-guarantees)).
+- **Byte-exact round trips** — `sap_idoc_read_raw → write` reproduces the input file bit-for-bit.
 - **Offline & portable** — the core needs no SAP and no network; works on a detached,
-  air-gapped host. Linux, macOS, and Windows.
+  air-gapped host. See [Platforms](#platforms-and-duckdb-versions).
 - **Framing & encoding** — contiguous fixed-width or LF/CRLF ports (auto-detected);
   UTF-8, `latin-1` and `cp1252` text; lenient mode for truncated files.
-- **Composes with `erpl_rfc`** — fetch the dictionary from a live system, or import a
-  generated IDoc, using documented SQL — but `erpl_idoc` itself never speaks RFC.
+- **Composes with `erpl_rfc`** — fetch the dictionary from a live system in plain SQL.
+  `erpl_idoc` itself never speaks RFC (see [Live SAP](#-live-sap-cleanly-separated)).
 
 ---
 
@@ -51,6 +54,14 @@ LOAD erpl_idoc;
 ```
 
 That’s it — no SAP connection required to read, write, or convert IDoc files.
+
+### Platforms and DuckDB versions
+
+CI builds and deploys the extension for **DuckDB v1.5.6** and the **v1.4.5 LTS** line on `linux_amd64`,
+`linux_arm64`, `osx_amd64`, `osx_arm64` and `windows_amd64`. The release gate installs the built artifact into
+the official DuckDB CLI and calls a function on `linux_amd64`, `osx_arm64` and `windows_amd64`; the other
+platforms are built but not smoke-tested. WebAssembly and the `windows_amd64_mingw`/`rtools` builds are not
+published. To build from source, see the section at the end.
 
 ---
 
@@ -68,10 +79,11 @@ SELECT idoctyp, mestyp, sndprn, rcvprn, credat
 FROM sap_idoc_read_control('orders.idoc');
 ```
 
-### Decode SDATA into typed columns
+### Decode SDATA into named columns
 
 `SDATA` is opaque fixed-width until you apply a **segment dictionary**. Point at one
-(a CSV/Parquet file, a table, or a view) and get named columns:
+(a CSV/Parquet file, a table, or a view) and get named columns. Column names come out
+**lower-case**; values are `VARCHAR` text unless you pass `typed := true` (below):
 
 ```sql
 SELECT airlineid, flightdate, customerid, class, passname
@@ -130,17 +142,35 @@ replace(tim::VARCHAR, ':', ''),
 CASE WHEN qty < 0 THEN abs(qty)::VARCHAR || '-' ELSE qty::VARCHAR END
 ```
 
-### Generate an IDoc file from SQL
+### Generate an IDoc from SQL (from scratch)
 
-Compose records from your data and write a byte-valid IDoc:
+`COPY (FORMAT sap_idoc)` writes the records you give it — one record per row, in order — and,
+with `validate true` (the default), checks each record's width. It does **not** compute the
+hierarchy: `SEGNUM`, `PSGNUM` and `HLEVEL` are inputs to `sap_idoc_encode_data_record`, and
+row order is the order of the file, so always `ORDER BY`.
 
 ```sql
+-- re-emit an existing file (byte-exact)
+COPY (SELECT raw_record FROM sap_idoc_read_raw('template.idoc') ORDER BY record_index)
+  TO 'outbound.idoc' (FORMAT sap_idoc);
+
+-- build a new record: reuse the control record from a template, encode a data record
 COPY (
-  SELECT raw_record
-  FROM sap_idoc_read_raw('template.idoc')   -- or build records with the encoders
-  ORDER BY record_index
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('template.idoc') WHERE record_type = 'control'
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record(
+                'E1SBO_CRE', '001', 1, 1, 0, 1,                      -- segnam, mandt, docnum, segnum, psgnum, hlevel
+                sap_idoc_encode_sdata([0], [3], ['abc']))            -- sdata: offsets, lengths, values
+  ) ORDER BY ord
 ) TO 'outbound.idoc' (FORMAT sap_idoc);
 ```
+
+Composing from business tables means computing `SEGNUM` (`row_number()`), `PSGNUM` (the nearest
+preceding segment one level up) and the `SDATA` per segment from a dictionary.
+[`sql/write_idoc_typed.sql`](sql/write_idoc_typed.sql) is a complete, tested recipe for exactly that
+(`test/sql/idoc_typed_write.test` runs it). Typed `DATE`/`TIME`/`DECIMAL` values must be formatted back
+to SAP text first — see [Real SQL types](#real-sql-types-typed--true).
 
 ### Convert flat ⇄ IDoc-XML
 
@@ -152,6 +182,10 @@ SELECT xml FROM sap_idoc_to_xml('orders.idoc', 'orders.dict.parquet');
 COPY (SELECT raw_record FROM sap_idoc_xml_to_records('orders.xml','orders.dict.parquet') ORDER BY record_index)
   TO 'orders.idoc' (FORMAT sap_idoc);
 ```
+
+Both directions take **one file path** (no glob) and load the whole file into memory. A segment with data
+that the dictionary doesn't describe makes them fail with an error naming the segment — see
+[Round-trip guarantees](#-round-trip-guarantees).
 
 ---
 
@@ -179,12 +213,14 @@ WHERE value <> '';
 
 ### 3. Produce outbound IDocs from transformed data
 Build IDoc content in SQL (joins, lookups, mappings) and emit a file a SAP file-port
-or inbound processing accepts. The writer handles fixed-width packing and derived-field
-math for you.
+or inbound processing accepts. The encoders handle fixed-width packing and padding; you
+compute the hierarchy fields (`SEGNUM`, `PSGNUM`, `HLEVEL`) with the tested recipe in
+[`sql/write_idoc_typed.sql`](sql/write_idoc_typed.sql).
 
 ### 4. Migrate a flat-file interface to IDoc-XML (or back)
-Two systems, two serializations. Convert losslessly in one step — `flat → xml → flat`
-is byte-exact — so you can switch a port’s format without touching the payload.
+Two systems, two serializations. Convert in one step — `flat → xml → flat` is byte-exact
+when the dictionary describes every segment and covers the SDATA bytes in use — so you can
+switch a port’s format without touching the payload.
 
 ### 5. Typed decode on an air-gapped host
 Fetch the segment dictionary **once** from a connected system, persist it to Parquet,
@@ -196,12 +232,15 @@ SELECT * FROM sap_idoc_read_segment('doc.idoc', 'E1BPSBONEW', 'flightbooking.dic
 ```
 
 ### 6. Validate before you send
-Catch structural problems early — bad offsets, overlaps, missing fields — and keep a
-byte-exact round trip as your safety net:
+Check your **dictionary** for structural problems — bad offsets, overlaps, duplicate field
+positions, fields past the end of `SDATA` — before you rely on it:
 
 ```sql
 SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sound
 ```
+
+`COPY (FORMAT sap_idoc)` additionally rejects records of the wrong width. There is no
+check of an IDoc file's field values, hierarchy or business content.
 
 ---
 
@@ -218,7 +257,8 @@ SELECT * FROM sap_idoc_dict_validate('mytype.dict.csv');   -- empty result = sou
 | `sap_idoc_read_raw(path [, …])` | one row per physical record with exact bytes — the byte-exact writer source |
 | `sap_idoc_read_xml(path)` | generic long rows from an IDoc-XML file (self-describing; no dictionary) |
 
-Every reader accepts a **single path, a glob, or a `LIST` of paths**, resolved through
+Every **flat-file** reader (`sap_idoc_read`, `_read_control`, `_read_segment`, `_read_fields`,
+`_read_raw`) accepts a **single path, a glob, or a `LIST` of paths**, resolved through
 DuckDB's virtual filesystem — so a whole directory works, including remote stores
 (`s3://…`, `http(s)://…`, `gs://…`) once the matching extension is loaded
 (`INSTALL httpfs; LOAD httpfs;`) and a `CREATE SECRET` is set for credentials:
@@ -231,6 +271,9 @@ SELECT * FROM sap_idoc_read(['a.idoc', 'b.idoc']);          -- explicit list
 ```sql
 SELECT filename, idoctyp FROM sap_idoc_read_control('s3://bucket/idocs/*.idoc', filename=true);
 ```
+
+The XML functions (`sap_idoc_read_xml`, `sap_idoc_to_xml`, `sap_idoc_xml_to_records`) take **one path**,
+no glob or `LIST`, and read the whole file into memory — for a folder of XML files, query them one by one.
 
 Parameters (the flat-file readers; the XML readers take only a path): `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'`
 (auto-detected when omitted) · `lenient := true` salvages complete records from a
@@ -261,10 +304,23 @@ still rejected). IDoc-XML input is already text and is never re-decoded.
 to `DATE`/`TIME`/`DECIMAL`) and `strict := true` (default; only with `typed := true`) — see
 [Real SQL types](#real-sql-types-typed--true).
 
-The readers are **streaming and parallel**: each file is parsed record-by-record in
+The flat-file readers are **streaming and parallel**: each file is parsed record-by-record in
 constant memory (never fully buffered), and a glob/`LIST` is read with one thread per
 file. Rows are therefore **unordered across files** (order within a file is preserved) —
 add `ORDER BY` if you need a stable order, exactly as with `read_csv`/`read_parquet`.
+
+**Joining across files.** `document_key` numbers the IDocs *within each file* (it restarts at 1 per file),
+so over a glob join on `(filename, document_key)`, never on `document_key` alone:
+
+```sql
+SELECT c.filename, c.document_key, c.docnum, s.passname
+FROM sap_idoc_read_control('inbox/*.idoc', filename=true) c
+JOIN sap_idoc_read_segment('inbox/*.idoc', 'E1BPSBONEW', 'flightbooking.dict.parquet', filename=true) s
+  USING (filename, document_key);
+```
+
+`sap_idoc_read_fields` also returns rows for segments missing from the dictionary (`field_name` NULL)
+unless you pass `include_unknown := false` — add `WHERE field_name IS NOT NULL` when aggregating.
 
 ```sql
 -- Decode a whole IDoc — all segments, all fields — in one call:
@@ -301,6 +357,9 @@ Build the records with the pure encoders when composing from scratch:
 | `sap_idoc_dict_offsets(src)` | compute field offsets from lengths (author a dict from field order + width) |
 | `sap_idoc_dict_validate(src)` | list structural problems; empty = sound |
 | `sap_idoc_dict_from_fields(fields, idoctyp, cimtyp, release)` | normalize a raw `IDOCTYPE_READ_COMPLETE` field list to the dictionary schema |
+| `sap_idoc_params(idoctyp [, cimtyp, version])` | macro: the parameter struct for `sap_idoc_dictionary` (needs `erpl_rfc`) |
+| `sap_idoc_dictionary(params)` | table macro: fetch + normalize a basic type's dictionary from a live system (needs `erpl_rfc`) |
+| `sap_idoc_version(name)` | smoke function: returns `erpl_idoc <name>`; confirms the extension loaded |
 
 Every function is self-documenting — `SELECT * FROM duckdb_functions() WHERE function_name LIKE 'sap_idoc_%'`
 shows a description and an example for each.
@@ -313,8 +372,12 @@ Typed mode needs to know each segment’s field layout (name, offset, length, ty
 “segment dictionary” is just a **relation** with these columns:
 
 ```
-idoctyp, cimtyp, release, segnam, segdef, field_pos, field_name, offset, length, datatype, ...
+idoctyp, cimtyp, release, segnam, segdef, field_pos, field_name, offset, length, datatype,
+data_element, description, mandatory      -- the last three are informational; optional: decimals
 ```
+
+Column names are case-insensitive. The segment lookup key is `segnam`, not `segdef`. `offset` is the
+0-based position inside `SDATA`; `length` the external width in bytes.
 
 Its origin is irrelevant to the parser — a file, a table, a view, or a query all work:
 
@@ -340,10 +403,17 @@ Its origin is irrelevant to the parser — a file, a table, a view, or a query a
 ## 🔁 Round-trip guarantees
 
 - **Generic:** `sap_idoc_read_raw → COPY (FORMAT sap_idoc)` reproduces the input file
-  **byte-for-byte**.
-- **Flat ⇄ XML:** `flat → xml → flat` (and `xml → flat`) is byte-exact with the dictionary.
-- **System-true:** IDocs written/converted by `erpl_idoc` are accepted by SAP inbound
-  processing (validated end-to-end against a live SAP AS ABAP system, not mocks).
+  **byte-for-byte**, for any IDoc — it never interprets the payload.
+- **Flat ⇄ XML:** `flat → xml → flat` (and `xml → flat`) is byte-exact **provided the dictionary
+  describes every segment in the file and its fields cover the SDATA bytes in use.** The XML form
+  carries only the dictionary's fields, trims trailing blanks, and the flat side is rebuilt with
+  recomputed `SEGNUM`/`PSGNUM`. So SDATA bytes that no dictionary field covers do not survive, and a
+  segment missing from the dictionary raises an error (naming the document and segment) when it has data —
+  it is never silently emptied. Segments with no data convert regardless.
+- **System-true:** IDocs written by `erpl_idoc` — including ones converted from XML — were
+  accepted by SAP inbound processing on an A4H trial system (`IDOC_INBOUND_WRITE_TO_DB`, through a small ABAP
+  helper; see `test/e2e/`), not mocks. That is one SAP release and a handful of IDoc types, not a
+  certification.
 
 ---
 
@@ -353,23 +423,41 @@ Its origin is irrelevant to the parser — a file, a table, a view, or a query a
 network calls. When you want a live round trip, you *compose* it with
 [`erpl_rfc`](https://github.com/DataZooDE/erpl) in SQL:
 
-- **Get a dictionary** — `sap_idoc_dictionary(sap_idoc_params('ORDERS05'))` (above).
-- **Import a generated IDoc** — hand the records to an `erpl_rfc` inbound call.
+- **Get a dictionary** — `sap_idoc_dictionary(sap_idoc_params('ORDERS05'))` (above). This is the
+  supported SQL-only live-SAP path.
+- **Import a generated IDoc** — there is no one-call SQL import. On the A4H trial,
+  `IDOC_INBOUND_WRITE_TO_DB` is not remote-callable, and `IDOC_INBOUND_ASYNCHRONOUS` is but runs
+  asynchronously and needs partner profiles. Our end-to-end tests therefore use a thin ABAP helper class
+  ([`test/e2e/abap/zcl_erpl_idoc_e2e.abap`](test/e2e/abap/zcl_erpl_idoc_e2e.abap)) that calls the inbound FM
+  inside the system; another route is to place the file where a SAP inbound file port reads it.
 
-This keeps the file format portable and dependency-free while still giving you the full
-loop when a system is reachable.
+This keeps the file format portable and dependency-free.
 
 ---
 
-## 🧭 Scope
+## 🧭 Scope and limits
 
-**In scope:** flat `EDI_DC40`/`EDI_DD40`, generic + typed read/write, the full control
-record, the segment dictionary (online/offline), both framings, multi-IDoc files,
-lenient/error handling, `latin-1`/UTF-8 decode, and IDoc-XML read/write + flat↔XML
-conversion.
+**In scope:** flat `EDI_DC40`/`EDI_DD40`, generic + dictionary-driven read/write (text by default,
+opt-in `DATE`/`TIME`/`DECIMAL`), the full control record, the segment dictionary (online/offline),
+both framings, multi-IDoc files and globs, lenient/error handling, `utf-8`/`ascii`/`latin-1`/`cp1252`
+decode, and IDoc-XML read/write + flat↔XML conversion.
 
-**Not (yet):** `EDIDS` status-record side output, X12/EDIFACT conversion, and
-business-semantic validation (only structural validity is checked).
+**Not (yet):**
+- `EDIDC`/`EDID4`/`EDIDS` **table** input or status-record side output — IDoc content read from SAP tables must be
+  re-encoded by hand;
+- X12/EDIFACT conversion;
+- business-semantic validation (only dictionary and record-width structure is checked);
+- glob/`LIST`, streaming and parallelism for the **XML** functions (single file, in memory);
+- dictionary → `CREATE TABLE` DDL export;
+- a one-call SQL import into SAP (see [Live SAP](#-live-sap-cleanly-separated)).
+
+**Good to know:**
+- Fixed record widths are in **bytes** (524 control / 1063 data), so multi-byte UTF-8 characters can overflow a
+  record; use `latin-1` or ASCII data for flat files.
+- `document_key` restarts per file — join on `(filename, document_key)`.
+- `COPY` writes rows in the order given; always `ORDER BY record_index` (or your own ordering column).
+- A segment's columns from `sap_idoc_read_segment` are lower-case; `sap_idoc_read_fields`/`sap_idoc_read_xml`
+  `field_name` values are the SAP upper-case names.
 
 ---
 
