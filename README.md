@@ -188,8 +188,9 @@ Both directions take **one file path** (no glob) and load the whole file into me
 type holding one `<IDOC>` each (SAP's multi-IDoc rendering); a file that mixes basic types is an error
 (convert the types separately), as is XML with more than one root element, an element under the root
 that is not an `<IDOC>`, or a basic type that isn't a valid XML element name. Namespaced names are written the way
-SAP writes them — `/` becomes `_-` (`/BA1/F4_FX_CREATE01` → `<_-BA1_-F4_FX_CREATE01>`, checked against SAP's own XML
-serialization on A4H) — and read back to the `/` form. A segment with data that the dictionary doesn't describe
+ABAP's XML serialization writes them — `/` becomes `_-` (`/BA1/F4_FX_CREATE01` → `<_-BA1_-F4_FX_CREATE01>`, checked
+against real output from an A4H system, kept in `test/fixtures/sap_asxml_namespaced.xml`) — and read back to the `/` form.
+SAP names never contain `-`, so a literal `_-` cannot be confused with an escaped `/`. A segment with data that the dictionary doesn't describe
 makes them fail with an error naming the segment — see *Round-trip guarantees* below.
 
 ---

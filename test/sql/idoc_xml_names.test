@@ -73,3 +73,78 @@ SELECT (SELECT content FROM read_blob('__TEST_DIR__/ns_back.idoc'))
      = (SELECT content FROM read_blob('__TEST_DIR__/ns.idoc'));
 ----
 true
+
+# --- SAP's real output as the oracle (test/fixtures/sap_asxml_namespaced.xml was captured from A4H by
+# test/e2e/m12_xml_names.sh: SAP's own serialization of /BA1/F4_FX_CREATE01 and /1BS/STRUC1) ----------
+statement ok
+COPY (SELECT CASE WHEN record_type = 'C'
+                  THEN replace(raw_record::VARCHAR, 'FLIGHTBOOKING_CREATEFROMDAT01', rpad('/BA1/F4_FX_CREATE01', 29, ' '))::BLOB
+                  ELSE replace(raw_record::VARCHAR, 'E1SBO_CRE  ', '/1BS/STRUC1')::BLOB END
+      FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/sapns.idoc' (FORMAT sap_idoc);
+
+statement ok
+COPY (SELECT * REPLACE (CASE WHEN segnam = 'E1SBO_CRE' THEN '/1BS/STRUC1' ELSE segnam END AS segnam)
+      FROM read_csv('test/fixtures/flight_dict.csv')) TO '__TEST_DIR__/sapns_dict.csv' (FORMAT csv, HEADER true);
+
+statement ok
+COPY (SELECT xml FROM sap_idoc_to_xml('__TEST_DIR__/sapns.idoc','__TEST_DIR__/sapns_dict.csv'))
+  TO '__TEST_DIR__/sapns.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+# the root tag SAP wrote for the namespaced basic type, and the tag for a namespaced component
+query II
+SELECT
+  (SELECT regexp_extract(content, '<asx:values>(<[^>]*>)', 1) FROM read_text('test/fixtures/sap_asxml_namespaced.xml'))
+  = (SELECT regexp_extract(content, '^<\?xml[^>]*>\s*(<[^>\s]*>)', 1) FROM read_text('__TEST_DIR__/sapns.xml')),
+  (SELECT count(*) FROM read_text('test/fixtures/sap_asxml_namespaced.xml') WHERE content LIKE '%<_-1BS_-STRUC1>%')
+  = (SELECT count(*) FROM read_text('__TEST_DIR__/sapns.xml') WHERE content LIKE '%<_-1BS_-STRUC1 %');
+----
+true	true
+
+# --- field names with '/' (DDIC fields like /1BS/FIELD1) are escaped and read back too ---------------
+statement ok
+COPY (SELECT * REPLACE (CASE WHEN field_name = 'PASSNAME' THEN '/B/PASSNAME' ELSE field_name END AS field_name)
+      FROM read_csv('test/fixtures/flight_dict.csv')) TO '__TEST_DIR__/fns_dict.csv' (FORMAT csv, HEADER true);
+
+statement ok
+COPY (SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight.idoc','__TEST_DIR__/fns_dict.csv'))
+  TO '__TEST_DIR__/fns.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query T
+SELECT value FROM sap_idoc_read_xml('__TEST_DIR__/fns.xml') WHERE field_name = '/B/PASSNAME';
+----
+MUELLER
+
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('__TEST_DIR__/fns.xml','__TEST_DIR__/fns_dict.csv') ORDER BY record_index)
+  TO '__TEST_DIR__/fns_back.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/fns_back.idoc')) = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
+
+# --- a segment or field name that is not a valid XML name is an error, not malformed XML -------------
+statement ok
+COPY (SELECT * REPLACE (CASE WHEN field_name = 'PASSNAME' THEN 'PASS NAME' ELSE field_name END AS field_name)
+      FROM read_csv('test/fixtures/flight_dict.csv')) TO '__TEST_DIR__/badfield_dict.csv' (FORMAT csv, HEADER true);
+
+statement error
+SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight.idoc','__TEST_DIR__/badfield_dict.csv');
+----
+'PASS NAME' is not a valid XML element name
+
+statement ok
+COPY (SELECT * REPLACE (CASE WHEN segnam = 'E1SBO_CRE' THEN 'E1 SBO' ELSE segnam END AS segnam)
+      FROM read_csv('test/fixtures/flight_dict.csv')) TO '__TEST_DIR__/badseg_dict.csv' (FORMAT csv, HEADER true);
+
+# (the flat file's segment is still E1SBO_CRE, so use a flat file renamed to match)
+statement ok
+COPY (SELECT replace(raw_record::VARCHAR, 'E1SBO_CRE', 'E1 SBO   ')::BLOB
+      FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/badseg.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT xml FROM sap_idoc_to_xml('__TEST_DIR__/badseg.idoc','__TEST_DIR__/badseg_dict.csv');
+----
+'E1 SBO' is not a valid XML element name

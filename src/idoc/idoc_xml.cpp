@@ -25,7 +25,9 @@ static bool CIEqual(const char *a, const char *b) {
 }
 
 // SAP renders '/' (ABAP namespaces, e.g. /BA1/F4_FX_CREATE01) as "_-" in XML element names. Verified
-// against SAP's own XML serialization on an A4H system (test/e2e/m12_xml_names.sh).
+// against SAP's own XML serialization on an A4H system (test/e2e/m12_xml_names.sh; real output is checked
+// in as test/fixtures/sap_asxml_namespaced.xml). Not ambiguous in practice: SAP names are letters, digits,
+// '_' and '/', never '-', so a literal "_-" cannot occur in one.
 static std::string EscapeXmlName(const std::string &name) {
 	std::string out;
 	for (char c : name) {
@@ -174,19 +176,6 @@ static void XmlEscapeInto(std::string &out, const std::string &s) {
 	}
 }
 
-static void EmitFields(std::string &out, const std::vector<XmlField> &fields, const std::string &indent) {
-	for (const auto &f : fields) {
-		auto v = RTrimValue(f.value);
-		if (v.empty()) {
-			continue; // omit empty fields
-		}
-		auto name = EscapeXmlName(f.name);
-		out += indent + "<" + name + ">";
-		XmlEscapeInto(out, v);
-		out += "</" + name + ">\n";
-	}
-}
-
 // XML Name restricted to ASCII: a letter or '_' first, then letters, digits, '_', '-' or '.'.
 static bool IsXmlName(const std::string &s) {
 	if (s.empty() || !(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) {
@@ -198,6 +187,28 @@ static bool IsXmlName(const std::string &s) {
 		}
 	}
 	return true;
+}
+
+// The (escaped) name of an IDoc, segment or field becomes an XML element name: refuse one that cannot be.
+static std::string XmlElementName(const std::string &sap_name) {
+	auto escaped = EscapeXmlName(sap_name);
+	if (!IsXmlName(escaped)) {
+		throw std::runtime_error("'" + sap_name + "' is not a valid XML element name");
+	}
+	return escaped;
+}
+
+static void EmitFields(std::string &out, const std::vector<XmlField> &fields, const std::string &indent) {
+	for (const auto &f : fields) {
+		auto v = RTrimValue(f.value);
+		if (v.empty()) {
+			continue; // omit empty fields
+		}
+		auto name = XmlElementName(f.name);
+		out += indent + "<" + name + ">";
+		XmlEscapeInto(out, v);
+		out += "</" + name + ">\n";
+	}
 }
 
 std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
@@ -220,10 +231,7 @@ std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 			                         "'; convert the types separately");
 		}
 	}
-	auto root = EscapeXmlName(idoctyp);
-	if (!IsXmlName(root)) {
-		throw std::runtime_error("IDOCTYP '" + idoctyp + "' is not a valid XML element name; it becomes the root element");
-	}
+	auto root = XmlElementName(idoctyp); // the basic type becomes the root element
 	out += "<" + root + ">\n";
 	for (const auto &idoc : idocs) {
 		out += "  <IDOC BEGIN=\"1\">\n";
@@ -245,7 +253,7 @@ std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 		for (const auto &seg : idoc.segments) {
 			close_to(seg.hlevel);
 			std::string ind(4 + seg.hlevel * 2, ' ');
-			auto tag = EscapeXmlName(seg.segnam);
+			auto tag = XmlElementName(seg.segnam);
 			out += ind + "<" + tag + " SEGMENT=\"1\">\n";
 			EmitFields(out, seg.fields, ind + "  ");
 			open.push_back(tag);
