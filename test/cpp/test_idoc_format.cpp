@@ -215,7 +215,87 @@ TEST_CASE("DecodeText converts latin-1 high bytes to UTF-8 (FR-R6)", "[idoc][for
 	std::string latin1 = "M\xFCller"; // ü = 0xFC in latin-1
 	auto utf8 = DecodeText(latin1, "latin-1");
 	REQUIRE(utf8 == "M\xC3\xBCller"); // ü = U+00FC = C3 BC in UTF-8
-	REQUIRE(DecodeText(latin1, "utf-8") == latin1); // pass-through
+	REQUIRE(DecodeText("M\xC3\xBCller", "utf-8") == "M\xC3\xBCller"); // valid UTF-8 passes through
+	REQUIRE_THROWS_WITH(DecodeText(latin1, "utf-8"), Catch::Contains("not valid UTF-8"));
+}
+
+TEST_CASE("DecodeText cp1252 differs from latin-1 only in 0x80-0x9F", "[idoc][format][encoding]") {
+	REQUIRE(DecodeText("\x80", "cp1252") == "\xE2\x82\xAC");   // EUR U+20AC
+	REQUIRE(DecodeText("\x9F", "windows-1252") == "\xC5\xB8"); // Y-diaeresis U+0178
+	REQUIRE(DecodeText("\x81", "cp1252") == "\xC2\x81");       // undefined -> C1 control
+	REQUIRE(DecodeText("M\xFCller", "cp1252") == DecodeText("M\xFCller", "latin-1"));
+	REQUIRE(DecodeText("\x80", "latin-1") == "\xC2\x80"); // latin-1 keeps the C1 control (SAP legacy binary mode)
+}
+
+TEST_CASE("strict UTF-8 validation rejects every malformed form", "[idoc][format][encoding]") {
+	const char *good[] = {"", "abc", "\xC2\xA0", "\xDF\xBF", "\xE0\xA0\x80", "\xEF\xBF\xBD", "\xED\x9F\xBF",
+	                      "\xEE\x80\x80", "\xF0\x90\x80\x80", "\xF4\x8F\xBF\xBF"};
+	for (auto g : good) {
+		REQUIRE_NOTHROW(DecodeText(g, "utf-8"));
+	}
+	const char *bad[] = {"\x80",                 // lone continuation
+	                     "\xBF",                 // lone continuation
+	                     "\xC0\xAF",             // overlong '/'
+	                     "\xC1\xBF",             // overlong
+	                     "\xE0\x80\xAF",         // overlong 3-byte
+	                     "\xF0\x80\x80\xAF",     // overlong 4-byte
+	                     "\xED\xA0\x80",         // surrogate U+D800
+	                     "\xED\xBF\xBF",         // surrogate U+DFFF
+	                     "\xF4\x90\x80\x80",     // above U+10FFFF
+	                     "\xF5\x80\x80\x80",     // invalid lead
+	                     "\xFF",                 // invalid lead
+	                     "\xC2",                 // truncated 2-byte
+	                     "\xE2\x82",             // truncated 3-byte
+	                     "\xF0\x9F\x98",         // truncated 4-byte
+	                     "\xC2\x41",             // bad continuation
+	                     "a\xE2\x28\xA1"};       // bad continuation mid-string
+	for (auto b : bad) {
+		REQUIRE_THROWS_WITH(DecodeText(b, "utf-8"), Catch::Contains("not valid UTF-8"));
+	}
+}
+
+TEST_CASE("cp1252 high range matches the Windows-1252 table", "[idoc][format][encoding]") {
+	const unsigned expect[32] = {0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
+	                             0x2039, 0x0152, 0x008D, 0x017D, 0x008F, 0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
+	                             0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178};
+	for (unsigned i = 0; i < 32; i++) {
+		std::string one(1, static_cast<char>(0x80 + i));
+		std::string want;
+		unsigned cp = expect[i];
+		if (cp < 0x800) {
+			want += static_cast<char>(0xC0 | (cp >> 6));
+			want += static_cast<char>(0x80 | (cp & 0x3F));
+		} else {
+			want += static_cast<char>(0xE0 | (cp >> 12));
+			want += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+			want += static_cast<char>(0x80 | (cp & 0x3F));
+		}
+		REQUIRE(DecodeText(one, "cp1252") == want);
+	}
+	// everything outside 0x80-0x9F is identical to latin-1
+	for (unsigned c = 0; c < 256; c++) {
+		if (c >= 0x80 && c <= 0x9F) {
+			continue;
+		}
+		std::string one(1, static_cast<char>(c));
+		REQUIRE(DecodeText(one, "cp1252") == DecodeText(one, "latin-1"));
+	}
+}
+
+TEST_CASE("ascii is strict and the encoding can be resolved once", "[idoc][format][encoding]") {
+	REQUIRE(DecodeText("abc", "ascii") == "abc");
+	REQUIRE_THROWS_WITH(DecodeText("M\xC3\xBCller", "ascii"), Catch::Contains("not ASCII"));
+	auto enc = ResolveEncoding("Windows-1252");
+	REQUIRE(DecodeText("\x80", enc) == "\xE2\x82\xAC");
+	REQUIRE_THROWS_WITH(ResolveEncoding("utf-16"), Catch::Contains("unsupported encoding 'utf-16'"));
+}
+
+TEST_CASE("encoding names are validated, not passed through", "[idoc][format][encoding]") {
+	for (const char *ok : {"utf-8", "UTF8", "ascii", "latin-1", "Latin1", "ISO-8859-1", "cp1252", "Windows-1252"}) {
+		REQUIRE_NOTHROW(ValidateEncoding(ok));
+	}
+	REQUIRE_THROWS_WITH(ValidateEncoding("utf-16"), Catch::Contains("unsupported encoding 'utf-16'"));
+	REQUIRE_THROWS_WITH(DecodeText("abc", "koi8-r"), Catch::Contains("unsupported encoding 'koi8-r'"));
 }
 
 TEST_CASE("terminated framing rejects malformed record geometry", "[idoc][format][framing][safety]") {

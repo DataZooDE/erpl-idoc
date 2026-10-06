@@ -24,7 +24,7 @@ struct IdocReadBindData : public TableFunctionData {
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
 	bool with_filename = false;
-	std::string encoding = "utf-8";
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
 	ReaderKind kind = ReaderKind::DATA;
 };
 
@@ -40,7 +40,7 @@ static void ParseCommonBindArgs(ClientContext &context, TableFunctionBindInput &
 		bind.lenient = np["lenient"].GetValue<bool>();
 	}
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind.encoding = np["encoding"].GetValue<string>();
+		bind.encoding = CheckedEncodingParam(np["encoding"]);
 	}
 	if (np.count("filename") && !np["filename"].IsNull()) {
 		bind.with_filename = np["filename"].GetValue<bool>();
@@ -152,8 +152,10 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 			continue;
 		}
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
+		// IDoc-XML control values were already parsed as UTF-8 text; only flat bytes need decoding.
+		auto encoding = l.is_xml ? erpl_idoc::TextEncoding::UTF8 : bind.encoding;
 		for (idx_t i = 0; i < EDI_DC40_FIELDS.size(); i++) {
-			auto raw = erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]), bind.encoding);
+			auto raw = erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]), encoding);
 			output.SetValue(1 + i, out_row, Value(RTrim(raw)));
 		}
 		if (bind.with_filename) {
@@ -209,7 +211,7 @@ static void ReadIdocRawScan(ClientContext &context, TableFunctionInput &data_p, 
 static void AddReaderParams(TableFunction &f) {
 	f.named_parameters["framing"] = LogicalType::VARCHAR;  // 'fixed' | 'lf' | 'crlf'
 	f.named_parameters["lenient"] = LogicalType::BOOLEAN;  // salvage complete records
-	f.named_parameters["encoding"] = LogicalType::VARCHAR; // 'utf-8' (default) | 'latin-1'
+	f.named_parameters["encoding"] = LogicalType::VARCHAR; // 'utf-8' (default) | 'latin-1' | 'cp1252'
 	f.named_parameters["filename"] = LogicalType::BOOLEAN; // add a source-file column
 }
 
@@ -234,7 +236,7 @@ void RegisterIdocReaderFunctions(ExtensionLoader &loader) {
 	    "document_key, docnum, segnum, segnam, psgnum, hlevel, mandt and the raw 1000-char SDATA. The path may "
 	    "be a single file, a glob ('dir/*.idoc', 's3://bucket/idocs/*.idoc') resolved over DuckDB's filesystem, "
 	    "or a LIST of paths. Framing is auto-detected; 'lenient' salvages truncated files, 'encoding' decodes "
-	    "non-UTF-8 SDATA, and 'filename := true' adds the source-file column.",
+	    "non-UTF-8 SDATA ('utf-8', 'latin-1' or 'cp1252'), and 'filename := true' adds the source-file column.",
 	    {"SELECT * FROM sap_idoc_read('flight.idoc')",
 	     "SELECT filename, segnam FROM sap_idoc_read('corpus/*.idoc', filename=true)",
 	     "SELECT * FROM sap_idoc_read(['a.idoc', 'b.idoc'])"},

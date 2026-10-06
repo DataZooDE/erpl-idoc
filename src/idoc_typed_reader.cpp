@@ -37,7 +37,7 @@ struct ReadSegmentBindData : public TableFunctionData {
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
 	bool with_filename = false;
-	std::string encoding = "utf-8";
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
 	vector<TypedFieldRule> fields;
 };
 
@@ -58,7 +58,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		bind->lenient = np["lenient"].GetValue<bool>();
 	}
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind->encoding = np["encoding"].GetValue<string>();
+		bind->encoding = CheckedEncodingParam(np["encoding"]);
 	}
 	if (np.count("filename") && !np["filename"].IsNull()) {
 		bind->with_filename = np["filename"].GetValue<bool>();
@@ -156,7 +156,7 @@ struct ReadFieldsBindData : public TableFunctionData {
 	bool lenient = false;
 	bool include_unknown = true;
 	bool with_filename = false;
-	std::string encoding = "utf-8";
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
 	std::map<std::string, vector<TypedFieldRule>> fields_by_seg;
 };
 
@@ -176,7 +176,7 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 		bind->lenient = np["lenient"].GetValue<bool>();
 	}
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind->encoding = np["encoding"].GetValue<string>();
+		bind->encoding = CheckedEncodingParam(np["encoding"]);
 	}
 	if (np.count("include_unknown") && !np["include_unknown"].IsNull()) {
 		bind->include_unknown = np["include_unknown"].GetValue<bool>();

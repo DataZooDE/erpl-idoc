@@ -147,10 +147,27 @@ private:
 	size_t high_water_ = 0;
 };
 
-// Decode raw record bytes to UTF-8 for text output. encoding is case-insensitive:
-// "utf-8"/"utf8" (pass through) or "latin-1"/"iso-8859-1"/"latin1" (each byte ->
-// code point). Unknown encodings pass through unchanged.
-std::string DecodeText(const std::string &raw, const std::string &encoding);
+// Text encoding of the bytes in an IDoc file. Resolve it once (ResolveEncoding) and pass the
+// enum to DecodeText on the scan path.
+enum class TextEncoding { UTF8, ASCII, LATIN1, CP1252 };
+
+// Case-insensitive names:
+//   "utf-8"/"utf8"                          validated, then passed through
+//   "ascii"/"us-ascii"                      bytes must be < 0x80
+//   "latin-1"/"latin1"/"iso-8859-1"/...     each byte -> the code point of the same value
+//                                           (what SAP's legacy binary mode does)
+//   "cp1252"/"windows-1252"                 as latin-1, except 0x80-0x9F (EUR, quotes, ...)
+// Throws std::runtime_error("unsupported encoding 'X' (supported: ...)") for anything else --
+// call it at bind time so a typo fails the query instead of silently returning raw bytes.
+TextEncoding ResolveEncoding(const std::string &encoding);
+
+// Decode raw record bytes to UTF-8 for text output. Throws std::runtime_error for bytes that
+// are not valid in the encoding (the message hints at latin-1/cp1252).
+std::string DecodeText(const std::string &raw, TextEncoding encoding);
+std::string DecodeText(const std::string &raw, const std::string &encoding); // = ResolveEncoding + decode
+
+// Throws for an unsupported encoding name (= ResolveEncoding, result discarded).
+void ValidateEncoding(const std::string &encoding);
 
 // Trailing-space trim (right trim only) — for the friendly generic/typed views.
 std::string RTrim(const std::string &s);
