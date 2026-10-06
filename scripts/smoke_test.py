@@ -24,6 +24,8 @@ import platform
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -60,7 +62,17 @@ def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
     zip_path = os.path.join(dest_dir, "duckdb_cli.zip")
 
     print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
-    urllib.request.urlretrieve(url, zip_path)
+    # A transient network error must not block a release gate; a 404 (wrong asset name) is retried too
+    # but then fails with the URL in the message instead of a traceback.
+    for attempt in range(1, 4):
+        try:
+            urllib.request.urlretrieve(url, zip_path)
+            break
+        except (urllib.error.URLError, OSError) as exc:
+            if attempt == 3:
+                raise SystemExit(f"Smoke test FAILED: could not download {url}: {exc}")
+            print(f"  download attempt {attempt} failed ({exc}); retrying")
+            time.sleep(5 * attempt)
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(dest_dir)
@@ -84,13 +96,16 @@ def _run_sql(duckdb_bin: str, sql: str, home: str) -> subprocess.CompletedProces
     env = dict(os.environ)
     env["HOME"] = home
     env["USERPROFILE"] = home
-    return subprocess.run(
-        [duckdb_bin, "-unsigned", "-noheader", "-list", "-c", sql],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=300,
-    )
+    try:
+        return subprocess.run(
+            [duckdb_bin, "-unsigned", "-noheader", "-list", "-c", sql],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(f"Smoke test FAILED: the DuckDB CLI hung (>{exc.timeout}s) running: {sql.strip()[:80]}")
 
 
 def _fail(message: str, proc: subprocess.CompletedProcess | None = None) -> None:
