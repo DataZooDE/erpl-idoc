@@ -1,0 +1,66 @@
+# name: test/sql/idoc_from_edidc_edid4.test
+# description: the encoding half of sql/idoc_from_edidc_edid4.sql, on EDIDC/EDID4-shaped tables, reproduces the real fixture byte-exact
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# EDIDC-shaped: one row, SAP's column names (IDOCTP instead of IDOCTYP, no TABNAM,
+# CREDAT/CRETIM as DATE/TIME like erpl_rfc returns them), built from the fixture's control record
+statement ok
+CREATE TEMP TABLE edidc_src AS
+SELECT mandt AS MANDT, docnum AS DOCNUM, docrel AS DOCREL, status AS STATUS, direct AS DIRECT, outmod AS OUTMOD,
+       exprss AS EXPRSS, test AS TEST, idoctyp AS IDOCTP, cimtyp AS CIMTYP, mestyp AS MESTYP, mescod AS MESCOD,
+       mesfct AS MESFCT, std AS STD, stdvrs AS STDVRS, stdmes AS STDMES, sndpor AS SNDPOR, sndprt AS SNDPRT,
+       sndpfc AS SNDPFC, sndprn AS SNDPRN, sndsad AS SNDSAD, sndlad AS SNDLAD, rcvpor AS RCVPOR, rcvprt AS RCVPRT,
+       rcvpfc AS RCVPFC, rcvprn AS RCVPRN, rcvsad AS RCVSAD, rcvlad AS RCVLAD,
+       strptime(credat, '%Y%m%d')::DATE AS CREDAT, strptime(cretim, '%H%M%S')::TIME AS CRETIM,
+       refint AS REFINT, refgrp AS REFGRP, refmes AS REFMES, arckey AS ARCKEY, serial AS SERIAL
+FROM sap_idoc_read_control('test/fixtures/flight.idoc');
+
+query I
+SELECT count(*) FROM edidc_src;
+----
+1
+
+# EDID4-shaped: one row per segment, SDATA with trailing blanks trimmed (what the RFC returns),
+# inserted in REVERSE order to prove the recipe sorts by SEGNUM
+statement ok
+CREATE TEMP TABLE edid4_src AS
+SELECT segnum AS segnum, segnam AS segnam, psgnum AS psgnum, hlevel AS hlevel, rtrim(sdata) AS sdata
+FROM sap_idoc_read('test/fixtures/flight.idoc')
+ORDER BY segnum DESC;
+
+query I
+SELECT count(*) FROM edid4_src;
+----
+2
+
+# step 3 of the recipe, verbatim apart from the target path
+statement ok
+COPY (
+    SELECT raw FROM (
+        SELECT 0 AS ord,
+               sap_idoc_encode_control([
+                   'EDI_DC40', c.MANDT, c.DOCNUM, c.DOCREL, c.STATUS, c.DIRECT, c.OUTMOD, c.EXPRSS, c.TEST,
+                   c.IDOCTP, c.CIMTYP, c.MESTYP, c.MESCOD, c.MESFCT, c.STD, c.STDVRS, c.STDMES,
+                   c.SNDPOR, c.SNDPRT, c.SNDPFC, c.SNDPRN, c.SNDSAD, c.SNDLAD,
+                   c.RCVPOR, c.RCVPRT, c.RCVPFC, c.RCVPRN, c.RCVSAD, c.RCVLAD,
+                   COALESCE(strftime(CAST(c.CREDAT AS DATE), '%Y%m%d'), ''),
+                   COALESCE(replace(left(CAST(c.CRETIM AS VARCHAR), 8), ':', ''), ''),
+                   c.REFINT, c.REFGRP, c.REFMES, c.ARCKEY, c.SERIAL]) AS raw
+        FROM edidc_src c
+        UNION ALL
+        SELECT CAST(s.segnum AS INTEGER),
+               sap_idoc_encode_data_record(s.segnam, c.MANDT, CAST(c.DOCNUM AS BIGINT), CAST(s.segnum AS BIGINT),
+                                           CAST(s.psgnum AS BIGINT), CAST(s.hlevel AS INTEGER),
+                                           sap_idoc_encode_sdata([0], [1000], [s.sdata]))
+        FROM edid4_src s, edidc_src c
+    ) ORDER BY ord
+) TO '__TEST_DIR__/from_tables.idoc' (FORMAT sap_idoc);
+
+# the file built from the tables is the real fixture, byte for byte
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/from_tables.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
