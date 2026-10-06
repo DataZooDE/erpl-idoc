@@ -57,7 +57,7 @@ static std::map<std::string, vector<FieldRule>> LoadDictRules(ClientContext &con
 	}
 	std::map<std::string, vector<FieldRule>> rules;
 	for (idx_t i = 0; i < res->RowCount(); i++) {
-		auto seg = res->GetValue(0, i).ToString();
+		auto seg = erpl_idoc::RTrim(res->GetValue(0, i).ToString());
 		FieldRule r;
 		r.field_name = res->GetValue(1, i).ToString();
 		r.offset = res->GetValue(2, i).GetValue<int64_t>();
@@ -185,7 +185,15 @@ static unique_ptr<GlobalTableFunctionState> ToXmlInit(ClientContext &context, Ta
 			seg.hlevel = hl.empty() ? 1 : std::stoi(hl);
 			auto sdata = erpl_idoc::GetFieldRaw(rec.bytes, erpl_idoc::EDI_DD40_FIELDS[6]);
 			auto it = rules.find(seg.segnam);
-			if (it != rules.end()) {
+			if (it == rules.end()) {
+				// A segment with no dictionary entry is only safe to emit empty if it carries no data.
+				if (sdata.find_first_not_of(' ') != std::string::npos) {
+					throw InvalidInputException(
+					    "sap_idoc_to_xml: segment '%s' (document %d, segment %d) has data but is not in the "
+					    "dictionary (looked up by segnam); refusing to emit it empty",
+					    seg.segnam, static_cast<int64_t>(rec.document_key), static_cast<int64_t>(idoc.segments.size() + 1));
+				}
+			} else {
 				for (auto &fr : it->second) {
 					std::string val;
 					if (fr.offset >= 0 && fr.length >= 0 &&
@@ -278,9 +286,17 @@ static unique_ptr<GlobalTableFunctionState> XmlToRecInit(ClientContext &context,
 			last_at_level[seg.hlevel] = segnum;
 
 			// SDATA from dict rules + segment field values (by name)
-			std::string sdata(erpl_idoc::SDATA_LEN, ' ');
 			auto it = rules.find(seg.segnam);
-			if (it != rules.end()) {
+			std::string sdata(erpl_idoc::SDATA_LEN, ' ');
+			if (it == rules.end()) {
+				// A segment with no dictionary entry is only safe to write blank if the XML gave it no fields.
+				if (!seg.fields.empty()) {
+					throw InvalidInputException(
+					    "sap_idoc_xml_to_records: segment '%s' (document %d, segment %d) has fields but is not in "
+					    "the dictionary (looked up by segnam); refusing to write a blank SDATA",
+					    seg.segnam, dk, segnum);
+				}
+			} else {
 				vector<int64_t> offs, lens;
 				vector<std::string> vals;
 				for (auto &fr : it->second) {

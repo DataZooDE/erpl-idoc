@@ -1,0 +1,49 @@
+# name: test/sql/idoc_xml_incomplete_dict.test
+# description: flat<->XML conversion must fail loudly (not blank the payload) when the dictionary lacks a segment
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# a dictionary that is missing E1BPSBONEW, a segment present in flight.idoc / flight.xml
+statement ok
+COPY (SELECT * FROM read_csv('test/fixtures/flight_dict.csv') WHERE segnam <> 'E1BPSBONEW')
+  TO '__TEST_DIR__/dict_missing.csv' (FORMAT csv, HEADER true);
+
+# flat -> XML: previously emitted an empty segment, silently losing the payload
+statement error
+SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight.idoc','__TEST_DIR__/dict_missing.csv');
+----
+sap_idoc_to_xml: segment 'E1BPSBONEW' (document 1, segment 2) has data but is not in the dictionary
+
+# XML -> flat: previously wrote a blank SDATA for the segment
+statement error
+SELECT raw_record FROM sap_idoc_xml_to_records('test/fixtures/flight.xml','__TEST_DIR__/dict_missing.csv');
+----
+sap_idoc_xml_to_records: segment 'E1BPSBONEW' (document 1, segment 2) has fields but is not in the dictionary
+
+# a complete dictionary is unaffected
+query I
+SELECT count(*) FROM sap_idoc_xml_to_records('test/fixtures/flight.xml','test/fixtures/flight_dict.csv');
+----
+3
+
+# a segment with no payload (E1SBO_CRE: all-blank SDATA, no XML fields) loses nothing, so a
+# dictionary without it must still convert, losslessly, in both directions
+statement ok
+COPY (SELECT * FROM read_csv('test/fixtures/flight_dict.csv') WHERE segnam <> 'E1SBO_CRE')
+  TO '__TEST_DIR__/dict_no_empty.csv' (FORMAT csv, HEADER true);
+
+statement ok
+COPY (SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight.idoc','__TEST_DIR__/dict_no_empty.csv'))
+  TO '__TEST_DIR__/empty_seg.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_xml_to_records('__TEST_DIR__/empty_seg.xml','__TEST_DIR__/dict_no_empty.csv')
+      ORDER BY record_index)
+  TO '__TEST_DIR__/empty_seg.idoc' (FORMAT sap_idoc);
+
+query I
+SELECT (SELECT content FROM read_blob('__TEST_DIR__/empty_seg.idoc'))
+     = (SELECT content FROM read_blob('test/fixtures/flight.idoc'));
+----
+true
