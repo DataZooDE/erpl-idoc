@@ -1,0 +1,68 @@
+# name: test/sql/idoc_encoding.test
+# description: the `encoding` option decodes single-byte files, rejects unknown names and invalid UTF-8
+# group: [erpl_idoc]
+
+require erpl_idoc
+
+# flight_latin1.idoc: PASSNAME bytes DC 80 E4 9F (A4H reads these bytes 1:1 as U+00DC U+0080 U+00E4 U+009F)
+# flight_utf8.idoc:   PASSNAME = 'Müller €' encoded as UTF-8 (the record stays 1063 bytes wide)
+
+# --- latin-1 follows SAP's legacy binary mode: byte N -> U+00N (0x80/0x9F are C1 controls) -----
+query I
+SELECT list_transform(string_split(substr(passname, 1, 5), ''), x -> unicode(x))
+FROM sap_idoc_read_segment('test/fixtures/flight_latin1.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='latin-1');
+----
+[77, 220, 128, 228, 159]
+
+# --- cp1252 differs from latin-1 exactly in 0x80-0x9F (EUR, Y-diaeresis) ---------------------
+query I
+SELECT list_transform(string_split(substr(passname, 1, 5), ''), x -> unicode(x))
+FROM sap_idoc_read_segment('test/fixtures/flight_latin1.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='cp1252');
+----
+[77, 220, 8364, 228, 376]
+
+# names are case-insensitive and have aliases
+query I
+SELECT count(*) FROM sap_idoc_read('test/fixtures/flight_latin1.idoc', encoding='Windows-1252');
+----
+2
+
+query I
+SELECT count(*) FROM sap_idoc_read('test/fixtures/flight_latin1.idoc', encoding='ISO-8859-1');
+----
+2
+
+# --- valid UTF-8 decodes as is ----------------------------------------------------------------
+query T
+SELECT passname
+FROM sap_idoc_read_segment('test/fixtures/flight_utf8.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='utf-8');
+----
+Müller €
+
+# --- invalid UTF-8 is an error that names the problem, not mojibake ----------------------------
+statement error
+SELECT passname
+FROM sap_idoc_read_segment('test/fixtures/flight_latin1.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv');
+----
+not valid UTF-8
+
+# --- unknown encodings are rejected by every reader, not silently passed through -----------------
+statement error
+SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='utf-16');
+----
+unsupported encoding 'utf-16'
+
+statement error
+SELECT * FROM sap_idoc_read_control('test/fixtures/flight.idoc', encoding='cp1252x');
+----
+unsupported encoding 'cp1252x'
+
+statement error
+SELECT * FROM sap_idoc_read_segment('test/fixtures/flight.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='utf-16');
+----
+unsupported encoding 'utf-16'
+
+statement error
+SELECT * FROM sap_idoc_read_fields('test/fixtures/flight.idoc','test/fixtures/flight_dict.csv', encoding='koi8-r');
+----
+unsupported encoding 'koi8-r'

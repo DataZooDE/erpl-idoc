@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <stdexcept>
 
 namespace erpl_idoc {
 
@@ -347,25 +348,120 @@ bool RecordStreamer::Next(IdocRecord &out) {
 	return Emit(std::move(line), out);
 }
 
-std::string DecodeText(const std::string &raw, const std::string &encoding) {
+namespace {
+
+enum class TextEncoding { UTF8, LATIN1, CP1252 };
+
+bool ParseEncoding(const std::string &encoding, TextEncoding &out) {
 	std::string lower;
 	for (char c : encoding) {
 		lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 	}
-	if (lower == "latin-1" || lower == "latin1" || lower == "iso-8859-1" || lower == "iso8859-1") {
-		std::string out;
-		out.reserve(raw.size());
-		for (unsigned char c : raw) {
-			if (c < 0x80) {
-				out += static_cast<char>(c);
-			} else {
-				out += static_cast<char>(0xC0 | (c >> 6));
-				out += static_cast<char>(0x80 | (c & 0x3F));
-			}
-		}
-		return out;
+	if (lower == "utf-8" || lower == "utf8" || lower == "ascii" || lower == "us-ascii") {
+		out = TextEncoding::UTF8;
+	} else if (lower == "latin-1" || lower == "latin1" || lower == "iso-8859-1" || lower == "iso8859-1") {
+		out = TextEncoding::LATIN1;
+	} else if (lower == "cp1252" || lower == "windows-1252") {
+		out = TextEncoding::CP1252;
+	} else {
+		return false;
 	}
-	return raw; // utf-8 / unknown: pass through
+	return true;
+}
+
+// Code points of 0x80-0x9F in Windows-1252. The five undefined bytes (81 8D 8F 90 9D) map to
+// the C1 control of the same value, as latin-1 (and browsers) do.
+const unsigned CP1252_HIGH[32] = {0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+                                  0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+                                  0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+                                  0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178};
+
+void AppendUtf8(std::string &out, unsigned cp) {
+	if (cp < 0x80) {
+		out += static_cast<char>(cp);
+	} else if (cp < 0x800) {
+		out += static_cast<char>(0xC0 | (cp >> 6));
+		out += static_cast<char>(0x80 | (cp & 0x3F));
+	} else {
+		out += static_cast<char>(0xE0 | (cp >> 12));
+		out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+		out += static_cast<char>(0x80 | (cp & 0x3F));
+	}
+}
+
+// Strict UTF-8 check: no overlong forms, no surrogates, nothing above U+10FFFF.
+bool IsValidUtf8(const std::string &s) {
+	size_t i = 0, n = s.size();
+	while (i < n) {
+		unsigned char c = static_cast<unsigned char>(s[i]);
+		size_t len;
+		unsigned cp;
+		if (c < 0x80) {
+			i++;
+			continue;
+		} else if (c >= 0xC2 && c <= 0xDF) {
+			len = 2;
+			cp = c & 0x1F;
+		} else if (c >= 0xE0 && c <= 0xEF) {
+			len = 3;
+			cp = c & 0x0F;
+		} else if (c >= 0xF0 && c <= 0xF4) {
+			len = 4;
+			cp = c & 0x07;
+		} else {
+			return false;
+		}
+		if (i + len > n) {
+			return false;
+		}
+		for (size_t k = 1; k < len; k++) {
+			unsigned char cc = static_cast<unsigned char>(s[i + k]);
+			if ((cc & 0xC0) != 0x80) {
+				return false;
+			}
+			cp = (cp << 6) | (cc & 0x3F);
+		}
+		if ((len == 3 && cp < 0x800) || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+		    (cp >= 0xD800 && cp <= 0xDFFF)) {
+			return false;
+		}
+		i += len;
+	}
+	return true;
+}
+
+} // namespace
+
+void ValidateEncoding(const std::string &encoding) {
+	TextEncoding e;
+	if (!ParseEncoding(encoding, e)) {
+		throw std::runtime_error("unsupported encoding '" + encoding +
+		                         "' (supported: utf-8, latin-1 (iso-8859-1), cp1252 (windows-1252))");
+	}
+}
+
+std::string DecodeText(const std::string &raw, const std::string &encoding) {
+	TextEncoding e;
+	if (!ParseEncoding(encoding, e)) {
+		ValidateEncoding(encoding); // throws with the supported list
+	}
+	if (e == TextEncoding::UTF8) {
+		if (!IsValidUtf8(raw)) {
+			throw std::runtime_error("IDoc text is not valid UTF-8; if the file is single-byte (e.g. written by "
+			                         "SAP in a non-Unicode code page), pass encoding := 'latin-1' or 'cp1252'");
+		}
+		return raw;
+	}
+	std::string out;
+	out.reserve(raw.size());
+	for (unsigned char c : raw) {
+		if (e == TextEncoding::CP1252 && c >= 0x80 && c <= 0x9F) {
+			AppendUtf8(out, CP1252_HIGH[c - 0x80]);
+		} else {
+			AppendUtf8(out, c);
+		}
+	}
+	return out;
 }
 
 std::string RTrim(const std::string &s) {

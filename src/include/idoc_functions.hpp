@@ -1,8 +1,21 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "idoc_format.hpp"
 
 namespace duckdb {
+
+// The `encoding` named parameter, rejected at bind time if unsupported (a typo must fail the
+// query, not silently return undecoded bytes).
+inline std::string CheckedEncodingParam(const Value &v) {
+	auto encoding = v.GetValue<string>();
+	try {
+		erpl_idoc::ValidateEncoding(encoding);
+	} catch (const std::exception &e) {
+		throw BinderException(e.what());
+	}
+	return encoding;
+}
 
 // Reader table functions:
 //   sap_idoc_read(path)          -> generic long data-record schema (analytics view)

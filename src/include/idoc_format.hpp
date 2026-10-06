@@ -148,9 +148,16 @@ private:
 };
 
 // Decode raw record bytes to UTF-8 for text output. encoding is case-insensitive:
-// "utf-8"/"utf8" (pass through) or "latin-1"/"iso-8859-1"/"latin1" (each byte ->
-// code point). Unknown encodings pass through unchanged.
+//   "utf-8"/"utf8"/"ascii"                  validated, then passed through
+//   "latin-1"/"latin1"/"iso-8859-1"/...     each byte -> the code point of the same value
+//                                           (what SAP's legacy binary mode does)
+//   "cp1252"/"windows-1252"                 as latin-1, except 0x80-0x9F (EUR, quotes, ...)
+// Throws std::runtime_error for an unsupported encoding or bytes that are not valid UTF-8.
 std::string DecodeText(const std::string &raw, const std::string &encoding);
+
+// Throws std::runtime_error("unsupported encoding 'X' (supported: ...)") — call at bind time
+// so a typo fails the query instead of silently returning undecoded bytes.
+void ValidateEncoding(const std::string &encoding);
 
 // Trailing-space trim (right trim only) — for the friendly generic/typed views.
 std::string RTrim(const std::string &s);

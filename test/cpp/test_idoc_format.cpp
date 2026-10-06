@@ -215,7 +215,24 @@ TEST_CASE("DecodeText converts latin-1 high bytes to UTF-8 (FR-R6)", "[idoc][for
 	std::string latin1 = "M\xFCller"; // ü = 0xFC in latin-1
 	auto utf8 = DecodeText(latin1, "latin-1");
 	REQUIRE(utf8 == "M\xC3\xBCller"); // ü = U+00FC = C3 BC in UTF-8
-	REQUIRE(DecodeText(latin1, "utf-8") == latin1); // pass-through
+	REQUIRE(DecodeText("M\xC3\xBCller", "utf-8") == "M\xC3\xBCller"); // valid UTF-8 passes through
+	REQUIRE_THROWS_WITH(DecodeText(latin1, "utf-8"), Catch::Contains("not valid UTF-8"));
+}
+
+TEST_CASE("DecodeText cp1252 differs from latin-1 only in 0x80-0x9F", "[idoc][format][encoding]") {
+	REQUIRE(DecodeText("\x80", "cp1252") == "\xE2\x82\xAC");   // EUR U+20AC
+	REQUIRE(DecodeText("\x9F", "windows-1252") == "\xC5\xB8"); // Y-diaeresis U+0178
+	REQUIRE(DecodeText("\x81", "cp1252") == "\xC2\x81");       // undefined -> C1 control
+	REQUIRE(DecodeText("M\xFCller", "cp1252") == DecodeText("M\xFCller", "latin-1"));
+	REQUIRE(DecodeText("\x80", "latin-1") == "\xC2\x80"); // latin-1 keeps the C1 control (SAP legacy binary mode)
+}
+
+TEST_CASE("encoding names are validated, not passed through", "[idoc][format][encoding]") {
+	for (const char *ok : {"utf-8", "UTF8", "ascii", "latin-1", "Latin1", "ISO-8859-1", "cp1252", "Windows-1252"}) {
+		REQUIRE_NOTHROW(ValidateEncoding(ok));
+	}
+	REQUIRE_THROWS_WITH(ValidateEncoding("utf-16"), Catch::Contains("unsupported encoding 'utf-16'"));
+	REQUIRE_THROWS_WITH(DecodeText("abc", "koi8-r"), Catch::Contains("unsupported encoding 'koi8-r'"));
 }
 
 TEST_CASE("terminated framing rejects malformed record geometry", "[idoc][format][framing][safety]") {

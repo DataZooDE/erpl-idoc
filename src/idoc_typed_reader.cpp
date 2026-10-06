@@ -58,7 +58,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		bind->lenient = np["lenient"].GetValue<bool>();
 	}
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind->encoding = np["encoding"].GetValue<string>();
+		bind->encoding = CheckedEncodingParam(np["encoding"]);
 	}
 	if (np.count("filename") && !np["filename"].IsNull()) {
 		bind->with_filename = np["filename"].GetValue<bool>();
@@ -176,7 +176,7 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 		bind->lenient = np["lenient"].GetValue<bool>();
 	}
 	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind->encoding = np["encoding"].GetValue<string>();
+		bind->encoding = CheckedEncodingParam(np["encoding"]);
 	}
 	if (np.count("include_unknown") && !np["include_unknown"].IsNull()) {
 		bind->include_unknown = np["include_unknown"].GetValue<bool>();
