@@ -75,6 +75,11 @@ std::vector<XmlIdoc> ParseIdocXml(const std::string &xml) {
 	if (!root) {
 		throw std::runtime_error("IDoc-XML has no root element");
 	}
+	// A well-formed document has one root; the parser would otherwise just ignore the rest.
+	if (root->NextSiblingElement()) {
+		throw std::runtime_error("IDoc-XML has more than one root element; several IDocs of one basic type go "
+		                         "inside a single root as multiple <IDOC> elements");
+	}
 
 	// The root is the basic type; each <IDOC> is one document. Some renderings put the
 	// <IDOC> directly at the root — handle both.
@@ -150,15 +155,46 @@ static void EmitFields(std::string &out, const std::vector<XmlField> &fields, co
 	}
 }
 
+// XML Name restricted to ASCII: a letter or '_' first, then letters, digits, '_', '-' or '.'.
+static bool IsXmlName(const std::string &s) {
+	if (s.empty() || !(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) {
+		return false;
+	}
+	for (unsigned char c : s) {
+		if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) {
+			return false;
+		}
+	}
+	return true;
+}
+
 std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 	std::string out = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-	for (const auto &idoc : idocs) {
-		std::string idoctyp = XmlFieldValue(idoc.control, "IDOCTYP");
-		if (idoctyp.empty()) {
-			idoctyp = "IDOC";
+	if (idocs.empty()) {
+		throw std::runtime_error("no IDoc to convert to XML");
+	}
+	// SAP's multi-IDoc rendering: one root named after the basic type holding one <IDOC> per document.
+	// A single XML document has a single root, so all IDocs must share the basic type.
+	std::string idoctyp;
+	for (size_t i = 0; i < idocs.size(); i++) {
+		auto t = RTrimValue(XmlFieldValue(idocs[i].control, "IDOCTYP"));
+		if (t.empty()) {
+			t = "IDOC";
 		}
-		idoctyp = RTrimValue(idoctyp);
-		out += "<" + idoctyp + ">\n  <IDOC BEGIN=\"1\">\n";
+		if (i == 0) {
+			idoctyp = t;
+		} else if (t != idoctyp) {
+			throw std::runtime_error("one IDoc basic type per XML document: the file mixes '" + idoctyp + "' and '" + t +
+			                         "'; convert the types separately");
+		}
+	}
+	if (!IsXmlName(idoctyp)) {
+		throw std::runtime_error("IDOCTYP '" + idoctyp + "' is not a valid XML element name; it becomes the root element "
+		                         "(namespaced types such as /NS/TYPE are not supported)");
+	}
+	out += "<" + idoctyp + ">\n";
+	for (const auto &idoc : idocs) {
+		out += "  <IDOC BEGIN=\"1\">\n";
 		out += "    <EDI_DC40 SEGMENT=\"1\">\n";
 		EmitFields(out, idoc.control, "      ");
 		out += "    </EDI_DC40>\n";
@@ -183,8 +219,9 @@ std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 			open_levels.push_back(seg.hlevel);
 		}
 		close_to(1);
-		out += "  </IDOC>\n</" + idoctyp + ">\n";
+		out += "  </IDOC>\n";
 	}
+	out += "</" + idoctyp + ">\n";
 	return out;
 }
 
