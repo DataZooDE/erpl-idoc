@@ -24,6 +24,35 @@ static bool CIEqual(const char *a, const char *b) {
 	return *a == *b;
 }
 
+// SAP renders '/' (ABAP namespaces, e.g. /BA1/F4_FX_CREATE01) as "_-" in XML element names. Verified
+// against SAP's own XML serialization on an A4H system (test/e2e/m12_xml_names.sh; real output is checked
+// in as test/fixtures/sap_asxml_namespaced.xml). Not ambiguous in practice: SAP names are letters, digits,
+// '_' and '/', never '-', so a literal "_-" cannot occur in one.
+static std::string EscapeXmlName(const std::string &name) {
+	std::string out;
+	for (char c : name) {
+		if (c == '/') {
+			out += "_-";
+		} else {
+			out += c;
+		}
+	}
+	return out;
+}
+
+static std::string UnescapeXmlName(const std::string &name) {
+	std::string out;
+	for (size_t i = 0; i < name.size(); i++) {
+		if (name[i] == '_' && i + 1 < name.size() && name[i + 1] == '-') {
+			out += '/';
+			i++;
+		} else {
+			out += name[i];
+		}
+	}
+	return out;
+}
+
 std::string XmlFieldValue(const std::vector<XmlField> &fields, const std::string &name) {
 	for (const auto &f : fields) {
 		if (CIEqual(f.name.c_str(), name.c_str())) {
@@ -50,14 +79,14 @@ static std::string ElemText(const XMLElement *el) {
 // Recursively collect a segment element and its nested child segments (depth = hlevel).
 static void CollectSegment(const XMLElement *seg_el, int hlevel, std::vector<XmlSegment> &out) {
 	XmlSegment seg;
-	seg.segnam = seg_el->Name();
+	seg.segnam = UnescapeXmlName(seg_el->Name());
 	seg.hlevel = hlevel;
 	std::vector<const XMLElement *> child_segments;
 	for (const XMLElement *child = seg_el->FirstChildElement(); child; child = child->NextSiblingElement()) {
 		if (IsSegmentElement(child)) {
 			child_segments.push_back(child);
 		} else {
-			seg.fields.push_back(XmlField{child->Name(), ElemText(child)});
+			seg.fields.push_back(XmlField{UnescapeXmlName(child->Name()), ElemText(child)});
 		}
 	}
 	out.push_back(std::move(seg));
@@ -84,13 +113,17 @@ std::vector<XmlIdoc> ParseIdocXml(const std::string &xml) {
 	// The root is the basic type; each <IDOC> is one document. Some renderings put the
 	// <IDOC> directly at the root — handle both.
 	std::vector<const XMLElement *> idoc_els;
-	for (const XMLElement *el = root->FirstChildElement(); el; el = el->NextSiblingElement()) {
-		if (CIEqual(el->Name(), "IDOC")) {
+	if (CIEqual(root->Name(), "IDOC")) {
+		idoc_els.push_back(root);
+	} else {
+		for (const XMLElement *el = root->FirstChildElement(); el; el = el->NextSiblingElement()) {
+			if (!CIEqual(el->Name(), "IDOC")) {
+				// Not ignored: a stray element would be silently dropped from the conversion.
+				throw std::runtime_error(std::string("IDoc-XML: unexpected element <") + el->Name() +
+				                         "> under the root; only <IDOC> elements are allowed there");
+			}
 			idoc_els.push_back(el);
 		}
-	}
-	if (idoc_els.empty() && CIEqual(root->Name(), "IDOC")) {
-		idoc_els.push_back(root);
 	}
 	if (idoc_els.empty()) {
 		throw std::runtime_error("IDoc-XML: no <IDOC> element found");
@@ -103,7 +136,7 @@ std::vector<XmlIdoc> ParseIdocXml(const std::string &xml) {
 			// Control record: EDI_DC40 (or any EDI_DC* control element).
 			if (std::strncmp(el->Name(), "EDI_DC", 6) == 0) {
 				for (const XMLElement *f = el->FirstChildElement(); f; f = f->NextSiblingElement()) {
-					idoc.control.push_back(XmlField{f->Name(), ElemText(f)});
+					idoc.control.push_back(XmlField{UnescapeXmlName(f->Name()), ElemText(f)});
 				}
 			} else {
 				CollectSegment(el, 1, idoc.segments);
@@ -143,18 +176,6 @@ static void XmlEscapeInto(std::string &out, const std::string &s) {
 	}
 }
 
-static void EmitFields(std::string &out, const std::vector<XmlField> &fields, const std::string &indent) {
-	for (const auto &f : fields) {
-		auto v = RTrimValue(f.value);
-		if (v.empty()) {
-			continue; // omit empty fields
-		}
-		out += indent + "<" + f.name + ">";
-		XmlEscapeInto(out, v);
-		out += "</" + f.name + ">\n";
-	}
-}
-
 // XML Name restricted to ASCII: a letter or '_' first, then letters, digits, '_', '-' or '.'.
 static bool IsXmlName(const std::string &s) {
 	if (s.empty() || !(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_')) {
@@ -166,6 +187,28 @@ static bool IsXmlName(const std::string &s) {
 		}
 	}
 	return true;
+}
+
+// The (escaped) name of an IDoc, segment or field becomes an XML element name: refuse one that cannot be.
+static std::string XmlElementName(const std::string &sap_name) {
+	auto escaped = EscapeXmlName(sap_name);
+	if (!IsXmlName(escaped)) {
+		throw std::runtime_error("'" + sap_name + "' is not a valid XML element name");
+	}
+	return escaped;
+}
+
+static void EmitFields(std::string &out, const std::vector<XmlField> &fields, const std::string &indent) {
+	for (const auto &f : fields) {
+		auto v = RTrimValue(f.value);
+		if (v.empty()) {
+			continue; // omit empty fields
+		}
+		auto name = XmlElementName(f.name);
+		out += indent + "<" + name + ">";
+		XmlEscapeInto(out, v);
+		out += "</" + name + ">\n";
+	}
 }
 
 std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
@@ -188,11 +231,8 @@ std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 			                         "'; convert the types separately");
 		}
 	}
-	if (!IsXmlName(idoctyp)) {
-		throw std::runtime_error("IDOCTYP '" + idoctyp + "' is not a valid XML element name; it becomes the root element "
-		                         "(namespaced types such as /NS/TYPE are not supported)");
-	}
-	out += "<" + idoctyp + ">\n";
+	auto root = XmlElementName(idoctyp); // the basic type becomes the root element
+	out += "<" + root + ">\n";
 	for (const auto &idoc : idocs) {
 		out += "  <IDOC BEGIN=\"1\">\n";
 		out += "    <EDI_DC40 SEGMENT=\"1\">\n";
@@ -213,15 +253,16 @@ std::string EmitIdocXml(const std::vector<XmlIdoc> &idocs) {
 		for (const auto &seg : idoc.segments) {
 			close_to(seg.hlevel);
 			std::string ind(4 + seg.hlevel * 2, ' ');
-			out += ind + "<" + seg.segnam + " SEGMENT=\"1\">\n";
+			auto tag = XmlElementName(seg.segnam);
+			out += ind + "<" + tag + " SEGMENT=\"1\">\n";
 			EmitFields(out, seg.fields, ind + "  ");
-			open.push_back(seg.segnam);
+			open.push_back(tag);
 			open_levels.push_back(seg.hlevel);
 		}
 		close_to(1);
 		out += "  </IDOC>\n";
 	}
-	out += "</" + idoctyp + ">\n";
+	out += "</" + root + ">\n";
 	return out;
 }
 
