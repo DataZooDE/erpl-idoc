@@ -55,11 +55,21 @@ CREATE OR REPLACE TEMP TABLE edid4_src AS
               'OPTIONS'    : [{'TEXT': 'DOCNUM EQ ''<<<DOCNUM>>>'''}]}) r,
          UNNEST(r.TBLOUT2048) AS t(u);
 
+-- 2b) Fail loudly instead of writing a wrong file.
+SELECT error('IDoc <<<DOCNUM>>> not found in EDIDC') WHERE (SELECT count(*) FROM edidc_src) <> 1;
+SELECT error('IDoc <<<DOCNUM>>> has no EDID4 segments') WHERE (SELECT count(*) FROM edid4_src) = 0;
+SELECT error('duplicate SEGNUM in EDID4 for IDoc <<<DOCNUM>>>')
+WHERE (SELECT count(*) - count(DISTINCT segnum) FROM edid4_src) > 0;
+
 -- 3) Encode and write. The control record comes first, then the segments in SEGNUM order.
 --    Column mapping EDIDC -> EDI_DC40 (36 fields, in file order):
 --      TABNAM  = 'EDI_DC40' (not in EDIDC)          IDOCTYP = EDIDC.IDOCTP (renamed)
---      CREDAT / CRETIM: erpl_rfc returns DATE / TIME; the file wants YYYYMMDD / HHMMSS
+--      CREDAT / CRETIM: erpl_rfc returned DATE / TIME on the trial; the file wants YYYYMMDD / HHMMSS.
+--      Casting to text and keeping the digits works for DATE/TIME and for text columns alike
+--      (an SAP '00000000' date stays '00000000'; NULL becomes blank).
 --      every other field has the same name in EDIDC.
+--    Placeholders: <<<DOCNUM>>> must be 16 digits and <<<OUT>>> must not contain a single
+--    quote — they are pasted into SQL string literals (and, for DOCNUM, into the ABAP WHERE).
 --    STATUS and DIRECT are copied as stored (the IDoc's DATABASE status and direction).
 --    Override them here if the consumer of the file expects something else, e.g.
 --    STATUS '30' (ready for dispatch) and DIRECT '1' (outbound) for an outbound file port.
@@ -71,8 +81,8 @@ COPY (
                    c.IDOCTP, c.CIMTYP, c.MESTYP, c.MESCOD, c.MESFCT, c.STD, c.STDVRS, c.STDMES,
                    c.SNDPOR, c.SNDPRT, c.SNDPFC, c.SNDPRN, c.SNDSAD, c.SNDLAD,
                    c.RCVPOR, c.RCVPRT, c.RCVPFC, c.RCVPRN, c.RCVSAD, c.RCVLAD,
-                   COALESCE(strftime(CAST(c.CREDAT AS DATE), '%Y%m%d'), ''),
-                   COALESCE(replace(left(CAST(c.CRETIM AS VARCHAR), 8), ':', ''), ''),
+                   left(COALESCE(regexp_replace(CAST(c.CREDAT AS VARCHAR), '[^0-9]', '', 'g'), ''), 8),
+                   left(COALESCE(regexp_replace(CAST(c.CRETIM AS VARCHAR), '[^0-9]', '', 'g'), ''), 6),
                    c.REFINT, c.REFGRP, c.REFMES, c.ARCKEY, c.SERIAL]) AS raw
         FROM edidc_src c
         UNION ALL

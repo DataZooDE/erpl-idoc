@@ -19,7 +19,7 @@ SQL
 echo "$PING" | grep -q PONG || e2e_skip "A4H not reachable (ping != PONG)"
 
 # one-value query against the live system (erpl_rfc preamble + erpl_idoc)
-sql_value() { { echo ".output /dev/null"; e2e_preamble; echo ".output"; cat; } | "$DUCKDB" -unsigned -list -noheader 2>/dev/null | tr -d '\r' | tail -1; }
+sql_value() { { echo ".output /dev/null"; e2e_preamble; echo ".output"; cat; } | "$DUCKDB" -unsigned -list -noheader 2>/dev/null | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | tail -1; }
 
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 FILE="$WORK/from_tables.idoc"
@@ -46,9 +46,24 @@ SELECT string_agg(SEGNUM || ':' || trim(SEGNAM) || ':' || PSGNUM || ':' || HLEVE
 FROM sap_read_table('EDID4', FILTER='DOCNUM EQ ''$DOCNUM''');
 SQL
 )
+# all 36 EDI_DC40 values, in file order, '|'-joined (TABNAM is the constant EDI_DC40; CREDAT/CRETIM as digits)
 SAP_CTRL=$(sql_value <<SQL
-SELECT IDOCTP || '|' || MESTYP || '|' || DOCNUM || '|' || SNDPRN || '|' || RCVPRN
+SELECT array_to_string(list_transform(['EDI_DC40', MANDT, DOCNUM, DOCREL, STATUS, DIRECT, OUTMOD, EXPRSS, TEST,
+       IDOCTP, CIMTYP, MESTYP, MESCOD, MESFCT, STD, STDVRS, STDMES, SNDPOR, SNDPRT, SNDPFC, SNDPRN, SNDSAD, SNDLAD,
+       RCVPOR, RCVPRT, RCVPFC, RCVPRN, RCVSAD, RCVLAD,
+       left(regexp_replace(CAST(CREDAT AS VARCHAR), '[^0-9]', '', 'g'), 8),
+       left(regexp_replace(CAST(CRETIM AS VARCHAR), '[^0-9]', '', 'g'), 6),
+       REFINT, REFGRP, REFMES, ARCKEY, SERIAL], x -> COALESCE(x, '')), '|')
 FROM sap_read_table('EDIDC', FILTER='DOCNUM EQ ''$DOCNUM''');
+SQL
+)
+# the full SDATA of EVERY segment, hashed (SDATA only comes through /SAPDS/RFC_READ_TABLE2)
+SAP_ALLSDATA=$(sql_value <<SQL
+SELECT md5(string_agg(rtrim(substr(u.WA, 45)), '~' ORDER BY substr(u.WA, 1, 6)))
+FROM sap_rfc_invoke('/SAPDS/RFC_READ_TABLE2',
+       {'QUERY_TABLE':'EDID4',
+        'FIELDS':[{'FIELDNAME':'SEGNUM'},{'FIELDNAME':'SEGNAM'},{'FIELDNAME':'PSGNUM'},{'FIELDNAME':'HLEVEL'},{'FIELDNAME':'SDATA'}],
+        'OPTIONS':[{'TEXT':'DOCNUM EQ ''$DOCNUM'''}]}) r, UNNEST(r.TBLOUT2048) AS t(u);
 SQL
 )
 SAP_SDATA=$(sql_value <<SQL
@@ -62,24 +77,34 @@ SQL
 )
 
 # 4) the file, read back with erpl_idoc only
-FILE_STRUCT=$("$DUCKDB" -unsigned -list -noheader 2>/dev/null <<SQL | tr -d '\r' | tail -1
+FILE_STRUCT=$("$DUCKDB" -unsigned -list -noheader 2>/dev/null <<SQL | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | tail -1
 LOAD '$ERPL_IDOC_EXTENSION';
 SELECT string_agg(segnum || ':' || segnam || ':' || psgnum || ':' || hlevel, ',' ORDER BY segnum)
 FROM sap_idoc_read('$FILE');
 SQL
 )
-FILE_CTRL=$("$DUCKDB" -unsigned -list -noheader 2>/dev/null <<SQL | tr -d '\r' | tail -1
+FILE_CTRL=$("$DUCKDB" -unsigned -list -noheader 2>/dev/null <<SQL | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | tail -1
 LOAD '$ERPL_IDOC_EXTENSION';
-SELECT idoctyp || '|' || mestyp || '|' || docnum || '|' || sndprn || '|' || rcvprn FROM sap_idoc_read_control('$FILE');
+SELECT array_to_string(list_transform([tabnam, mandt, docnum, docrel, status, direct, outmod, exprss, test,
+       idoctyp, cimtyp, mestyp, mescod, mesfct, std, stdvrs, stdmes, sndpor, sndprt, sndpfc, sndprn, sndsad, sndlad,
+       rcvpor, rcvprt, rcvpfc, rcvprn, rcvsad, rcvlad, credat, cretim, refint, refgrp, refmes, arckey, serial],
+       x -> COALESCE(x, '')), '|')
+FROM sap_idoc_read_control('$FILE');
+SQL
+)
+FILE_ALLSDATA=$("$DUCKDB" -unsigned -list -noheader 2>/dev/null <<SQL | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | tail -1
+LOAD '$ERPL_IDOC_EXTENSION';
+SELECT md5(string_agg(rtrim(sdata), '~' ORDER BY segnum)) FROM sap_idoc_read('$FILE');
 SQL
 )
 NSEG=$(echo "$SAP_STRUCT" | tr ',' '\n' | grep -c .)
-[ -n "$SAP_STRUCT" ] && [ -n "$SAP_CTRL" ] && [ -n "$SAP_SDATA" ] || { echo "FAIL: could not read the source IDoc back from SAP (struct='$SAP_STRUCT' ctrl='$SAP_CTRL' sdata='$SAP_SDATA')"; exit 1; }
+[ -n "$SAP_STRUCT" ] && [ -n "$SAP_CTRL" ] && [ -n "$SAP_SDATA" ] && [ -n "$SAP_ALLSDATA" ] || { echo "FAIL: could not read the source IDoc back from SAP (struct='$SAP_STRUCT' ctrl='$SAP_CTRL' sdata='$SAP_SDATA')"; exit 1; }
 echo "  SAP says: $SAP_CTRL  segments: $SAP_STRUCT"
 echo "  SAP E1BPSBONEW SDATA: '$SAP_SDATA'"
 e2e_assert_eq "file size = control + segments x 1063" "$((524 + 1063 * NSEG))" "$(wc -c < "$FILE")"
 e2e_assert_eq "segment structure (SEGNUM:SEGNAM:PSGNUM:HLEVEL) equals EDID4" "$SAP_STRUCT" "$FILE_STRUCT"
-e2e_assert_eq "control record (IDOCTP|MESTYP|DOCNUM|SNDPRN|RCVPRN) equals EDIDC" "$SAP_CTRL" "$FILE_CTRL"
+e2e_assert_eq "all 36 control fields equal EDIDC (IDOCTP as IDOCTYP, CREDAT/CRETIM as digits)" "$SAP_CTRL" "$FILE_CTRL"
+e2e_assert_eq "full SDATA of every segment equals EDID4 (md5)" "$SAP_ALLSDATA" "$FILE_ALLSDATA"
 
 # 5) A4H accepts the file and re-reads the same payload from its own storage
 docker exec -i a4h sh -c 'cat > /tmp/erpl_idoc_e2e.idoc' < "$FILE" || { echo "FAIL: could not push the file into a4h"; exit 1; }

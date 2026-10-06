@@ -456,10 +456,16 @@ SELECT … FROM sap_rfc_invoke('/SAPDS/RFC_READ_TABLE2', {'QUERY_TABLE': 'EDID4'
 -- … then sap_idoc_encode_control / sap_idoc_encode_data_record / COPY (FORMAT sap_idoc), as in the file
 ```
 
-What was verified on an A4H trial (`test/e2e/m11_edidc_edid4.sh`): the file's control record and its segment
-structure (`SEGNUM`, `SEGNAM`, `PSGNUM`, `HLEVEL`) equal what `EDIDC` and `EDID4` hold, and SAP inbound accepted
-the file and stored the same payload. The encoding half is also tested offline, on `EDIDC`/`EDID4`-shaped tables,
-against the real fixture (`test/sql/idoc_from_edidc_edid4.test`).
+What was verified on an A4H trial (`test/e2e/m11_edidc_edid4.sh`): all 36 control fields of the file equal `EDIDC`,
+the segment structure (`SEGNUM`, `SEGNAM`, `PSGNUM`, `HLEVEL`) equals `EDID4`, and the full `SDATA` of every segment
+equals a fresh read of `EDID4` (compared by hash). SAP inbound then accepted the file, stored every segment, and
+its re-read of one segment's `SDATA` (the first 40 characters of `E1BPSBONEW`) matched the source IDoc. The pure-SQL
+parts are also tested offline on `EDIDC`/`EDID4`-shaped tables against the real fixture
+(`test/sql/idoc_from_edidc_edid4.test`): byte-exact output, the fixed-width parsing (including a `|` in the
+payload), text- as well as `DATE`/`TIME`-shaped `CREDAT`/`CRETIM`, and the guards below.
+
+The recipe stops with an error instead of writing a wrong file when the `DOCNUM` is not in `EDIDC`, when `EDID4`
+returns no segments, or when a `SEGNUM` appears twice.
 
 Limits to know:
 - **`EDID4-SDATA` cannot be read with `sap_read_table`.** It is a DDIC `LCHR` field, and `RFC_READ_TABLE` fails
@@ -472,9 +478,11 @@ Limits to know:
   `56`/`2`), not what a file port usually expects. Override them in the recipe if your consumer needs e.g. `30`/`1`.
   `EDIDC` columns that `EDI_DC40` has no field for (`DOCTYP`, `RCVSMN`…, `UPDDAT`, `UPDTIM`, `MAXSEGNUM`) are dropped;
   `TABNAM` is the constant `EDI_DC40`; `IDOCTP` becomes `IDOCTYP`.
-- **Not claimed:** that the file is byte-identical to one SAP's own outbound processing would write; documents with
-  more than one `EDID4` `COUNTER` block or large segment counts (only a 2-segment IDoc of one basic type was
-  exercised); non-ASCII payloads; status records (`EDIDS`).
+- **Placeholders are pasted into SQL string literals**: `<<<DOCNUM>>>` must be exactly 16 digits (it also ends up in
+  the ABAP `WHERE`) and the target path must not contain a single quote.
+- **Not claimed:** that the file is byte-identical to one SAP's own outbound processing would write; large IDocs
+  (only a 2-segment IDoc of one basic type was exercised, so the one-row-per-segment, ≤1044-byte rows landing in
+  `TBLOUT2048` is untested at scale); non-ASCII payloads; status records (`EDIDS`).
 
 ---
 
