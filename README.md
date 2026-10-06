@@ -187,7 +187,8 @@ COPY (SELECT raw_record FROM sap_idoc_xml_to_records('orders.xml','orders.dict.p
 Both directions take **one file path** (no glob) and load the whole file into memory, and they work on
 **one basic type per XML document**: several IDocs of the same type become one root element named after the
 type holding one `<IDOC>` each (SAP's multi-IDoc rendering); a file that mixes basic types is an error
-(convert the types separately), as is XML with more than one root element. A segment with data that the dictionary doesn't describe
+(convert the types separately), as is XML with more than one root element or a basic type that isn't a valid
+XML element name (namespaced types like `/NS/TYPE` are not supported yet). A segment with data that the dictionary doesn't describe
 makes them fail with an error naming the segment — see *Round-trip guarantees* below.
 
 ---

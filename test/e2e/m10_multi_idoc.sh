@@ -19,13 +19,15 @@ echo "$PING" | grep -q PONG || e2e_skip "A4H not reachable (ping != PONG)"
 HOST_FILE=/tmp/erpl_idoc_e2e.idoc
 
 # 1) Two IDocs -> one XML -> flat again, using ONLY erpl_idoc (no RFC).
-WORK=$(mktemp -d)
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+rm -f "$HOST_FILE"
 OUT=$("$DUCKDB" -unsigned -csv -noheader 2>/dev/null <<SQL
 LOAD '$ERPL_IDOC_EXTENSION';
 COPY (SELECT raw_record FROM (
         SELECT 0 AS g, record_index, raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc')
         UNION ALL
-        SELECT 1, record_index, raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc'))
+        -- the second IDoc is distinguishable in SAP: airline LH -> AB
+        SELECT 1, record_index, replace(raw_record::VARCHAR, 'LH 0400', 'AB 0400')::BLOB FROM sap_idoc_read_raw('test/fixtures/flight.idoc'))
       ORDER BY g, record_index) TO '$WORK/two.idoc' (FORMAT sap_idoc);
 COPY (SELECT xml FROM sap_idoc_to_xml('$WORK/two.idoc','test/fixtures/flight_dict.csv'))
   TO '$WORK/two.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
@@ -41,7 +43,6 @@ cmp -s "$WORK/two.idoc" "$WORK/back.idoc" && echo "  ok: round trip is byte-exac
 [ "$(grep -c '<IDOC ' "$WORK/two.xml")" -eq 2 ] && [ "$(grep -c '^<FLIGHTBOOKING' "$WORK/two.xml")" -eq 1 ] \
   && echo "  ok: one XML root holding two <IDOC>s" || { echo "FAIL: XML shape"; exit 1; }
 [ "$(wc -c < "$HOST_FILE")" -eq 2650 ] || { echo "FAIL: second IDoc is not 2650 bytes"; exit 1; }
-rm -rf "$WORK"
 
 # 2) Push into the container and run the (already-deployed) importer.
 docker exec -i a4h sh -c 'cat > /tmp/erpl_idoc_e2e.idoc' < "$HOST_FILE"
@@ -58,7 +59,7 @@ SEGCOUNT=$(echo "$RUN" | sed -n 's/^SEGCOUNT=//p' | tr -d '\r')
 echo "  A4H stored docnum=$DOCNUM segcount=$SEGCOUNT sdata='$SDATA'"
 
 [ -n "$DOCNUM" ] && [ "$DOCNUM" != "0000000000000000" ] || { echo "FAIL: no docnum"; exit 1; }
-e2e_assert_eq "SAP re-read of the segment from the second IDoc" "LH 04002026071500000042Y" "$SDATA"
+e2e_assert_eq "SAP re-read of the segment from the second IDoc" "AB 04002026071500000042Y" "$SDATA"
 e2e_assert_eq "SAP stored both segments"                            "2"                        "$SEGCOUNT"
 
 [ "$E2E_FAILED" -eq 0 ] && echo "M10 multi-IDoc E2E: PASS (A4H accepted the second IDoc of the round-tripped file)" || { echo "M10 multi-IDoc E2E: FAIL"; exit 1; }

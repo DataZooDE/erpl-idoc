@@ -73,3 +73,17 @@ statement error
 SELECT count(*) FROM sap_idoc_xml_to_records('__TEST_DIR__/tworoots.xml','test/fixtures/flight_dict.csv');
 ----
 more than one root element
+
+# IDOCTYP becomes the XML root element name; one that is not a valid XML name must be an error,
+# not malformed XML (here: a space inside the type)
+statement ok
+COPY (SELECT CASE WHEN record_type = 'C'
+                  THEN replace(raw_record::VARCHAR, 'FLIGHTBOOKING_CREATEFROMDAT01', 'FLIGHTBOOKING CREATEFROMDAT01')::BLOB
+                  ELSE raw_record END
+      FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/badtype.idoc' (FORMAT sap_idoc);
+
+statement error
+SELECT xml FROM sap_idoc_to_xml('__TEST_DIR__/badtype.idoc','test/fixtures/flight_dict.csv');
+----
+is not a valid XML element name
