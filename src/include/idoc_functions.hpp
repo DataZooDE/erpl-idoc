@@ -7,14 +7,13 @@ namespace duckdb {
 
 // The `encoding` named parameter, rejected at bind time if unsupported (a typo must fail the
 // query, not silently return undecoded bytes).
-inline std::string CheckedEncodingParam(const Value &v) {
-	auto encoding = v.GetValue<string>();
+inline erpl_idoc::TextEncoding CheckedEncodingParam(const Value &v) {
+	auto name = v.GetValue<string>();
 	try {
-		erpl_idoc::ValidateEncoding(encoding);
+		return erpl_idoc::ResolveEncoding(name);
 	} catch (const std::exception &e) {
 		throw BinderException(e.what());
 	}
-	return encoding;
 }
 
 // Reader table functions:

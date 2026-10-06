@@ -350,25 +350,6 @@ bool RecordStreamer::Next(IdocRecord &out) {
 
 namespace {
 
-enum class TextEncoding { UTF8, LATIN1, CP1252 };
-
-bool ParseEncoding(const std::string &encoding, TextEncoding &out) {
-	std::string lower;
-	for (char c : encoding) {
-		lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-	}
-	if (lower == "utf-8" || lower == "utf8" || lower == "ascii" || lower == "us-ascii") {
-		out = TextEncoding::UTF8;
-	} else if (lower == "latin-1" || lower == "latin1" || lower == "iso-8859-1" || lower == "iso8859-1") {
-		out = TextEncoding::LATIN1;
-	} else if (lower == "cp1252" || lower == "windows-1252") {
-		out = TextEncoding::CP1252;
-	} else {
-		return false;
-	}
-	return true;
-}
-
 // Code points of 0x80-0x9F in Windows-1252. The five undefined bytes (81 8D 8F 90 9D) map to
 // the C1 control of the same value, as latin-1 (and browsers) do.
 const unsigned CP1252_HIGH[32] = {0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
@@ -432,18 +413,45 @@ bool IsValidUtf8(const std::string &s) {
 
 } // namespace
 
-void ValidateEncoding(const std::string &encoding) {
-	TextEncoding e;
-	if (!ParseEncoding(encoding, e)) {
-		throw std::runtime_error("unsupported encoding '" + encoding +
-		                         "' (supported: utf-8, latin-1 (iso-8859-1), cp1252 (windows-1252))");
+TextEncoding ResolveEncoding(const std::string &encoding) {
+	std::string lower;
+	for (char c : encoding) {
+		lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 	}
+	if (lower == "utf-8" || lower == "utf8") {
+		return TextEncoding::UTF8;
+	}
+	if (lower == "ascii" || lower == "us-ascii") {
+		return TextEncoding::ASCII;
+	}
+	if (lower == "latin-1" || lower == "latin1" || lower == "iso-8859-1" || lower == "iso8859-1") {
+		return TextEncoding::LATIN1;
+	}
+	if (lower == "cp1252" || lower == "windows-1252") {
+		return TextEncoding::CP1252;
+	}
+	throw std::runtime_error("unsupported encoding '" + encoding +
+	                         "' (supported: utf-8, ascii, latin-1 (iso-8859-1), cp1252 (windows-1252))");
 }
 
-std::string DecodeText(const std::string &raw, const std::string &encoding) {
-	TextEncoding e;
-	if (!ParseEncoding(encoding, e)) {
-		ValidateEncoding(encoding); // throws with the supported list
+void ValidateEncoding(const std::string &encoding) {
+	ResolveEncoding(encoding);
+}
+
+std::string DecodeText(const std::string &raw, TextEncoding e) {
+	// Fast path: all-ASCII text is identical in every supported encoding (the common case).
+	bool high = false;
+	for (unsigned char c : raw) {
+		if (c >= 0x80) {
+			high = true;
+			break;
+		}
+	}
+	if (!high) {
+		return raw;
+	}
+	if (e == TextEncoding::ASCII) {
+		throw std::runtime_error("IDoc text is not ASCII; pass encoding := 'utf-8', 'latin-1' or 'cp1252'");
 	}
 	if (e == TextEncoding::UTF8) {
 		if (!IsValidUtf8(raw)) {
@@ -453,7 +461,7 @@ std::string DecodeText(const std::string &raw, const std::string &encoding) {
 		return raw;
 	}
 	std::string out;
-	out.reserve(raw.size());
+	out.reserve(raw.size() * 2);
 	for (unsigned char c : raw) {
 		if (e == TextEncoding::CP1252 && c >= 0x80 && c <= 0x9F) {
 			AppendUtf8(out, CP1252_HIGH[c - 0x80]);
@@ -462,6 +470,10 @@ std::string DecodeText(const std::string &raw, const std::string &encoding) {
 		}
 	}
 	return out;
+}
+
+std::string DecodeText(const std::string &raw, const std::string &encoding) {
+	return DecodeText(raw, ResolveEncoding(encoding));
 }
 
 std::string RTrim(const std::string &s) {

@@ -37,7 +37,7 @@ struct ReadSegmentBindData : public TableFunctionData {
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
 	bool with_filename = false;
-	std::string encoding = "utf-8";
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
 	vector<TypedFieldRule> fields;
 };
 
@@ -156,7 +156,7 @@ struct ReadFieldsBindData : public TableFunctionData {
 	bool lenient = false;
 	bool include_unknown = true;
 	bool with_filename = false;
-	std::string encoding = "utf-8";
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
 	std::map<std::string, vector<TypedFieldRule>> fields_by_seg;
 };
 

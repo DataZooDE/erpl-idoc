@@ -147,6 +147,7 @@ static void ReadXmlScan(ClientContext &, TableFunctionInput &data_p, DataChunk &
 struct FlatDictBindData : public TableFunctionData {
 	std::string path;
 	std::string dict;
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8; // sap_idoc_to_xml only
 };
 struct SingleStringGlobalState : public GlobalTableFunctionState {
 	std::string value;
@@ -160,6 +161,10 @@ static unique_ptr<FunctionData> ToXmlBind(ClientContext &, TableFunctionBindInpu
 	auto bind = make_uniq<FlatDictBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
 	bind->dict = input.inputs[1].GetValue<string>();
+	auto enc = input.named_parameters.find("encoding");
+	if (enc != input.named_parameters.end() && !enc->second.IsNull()) {
+		bind->encoding = CheckedEncodingParam(enc->second);
+	}
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_to_xml");
 	names = {"xml"};
 	return_types = {LogicalType::VARCHAR};
@@ -176,7 +181,8 @@ static unique_ptr<GlobalTableFunctionState> ToXmlInit(ClientContext &context, Ta
 		auto &idoc = by_doc[rec.document_key];
 		if (rec.is_control) {
 			for (auto &fs : erpl_idoc::EDI_DC40_FIELDS) {
-				idoc.control.push_back(XmlField{fs.name, erpl_idoc::RTrim(erpl_idoc::GetFieldRaw(rec.bytes, fs))});
+				idoc.control.push_back(XmlField{
+				    fs.name, erpl_idoc::RTrim(erpl_idoc::DecodeText(erpl_idoc::GetFieldRaw(rec.bytes, fs), bind.encoding))});
 			}
 		} else {
 			XmlSegment seg;
@@ -198,7 +204,7 @@ static unique_ptr<GlobalTableFunctionState> ToXmlInit(ClientContext &context, Ta
 					std::string val;
 					if (fr.offset >= 0 && fr.length >= 0 &&
 					    static_cast<size_t>(fr.offset + fr.length) <= sdata.size()) {
-						val = erpl_idoc::RTrim(sdata.substr(fr.offset, fr.length));
+						val = erpl_idoc::RTrim(erpl_idoc::DecodeText(sdata.substr(fr.offset, fr.length), bind.encoding));
 					}
 					seg.fields.push_back(XmlField{fr.field_name, val});
 				}
@@ -335,14 +341,18 @@ void RegisterIdocXmlFunctions(ExtensionLoader &loader) {
 	    "is needed.",
 	    {"SELECT * FROM sap_idoc_read_xml('flight.xml')"}, {"path"});
 
+	TableFunction to_xml("sap_idoc_to_xml", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                     DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlScan), DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlBind),
+	                     ToXmlInit);
+	to_xml.named_parameters["encoding"] = LogicalType::VARCHAR; // flat bytes -> the XML's UTF-8
 	RegisterDocTableFunction(
-	    loader,
-	    TableFunction("sap_idoc_to_xml", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                  DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlScan), DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlBind),
-	                  ToXmlInit),
+	    loader, std::move(to_xml),
 	    "Convert a flat IDoc file to IDoc-XML (returns one row with the XML text). The dictionary names each "
-	    "SDATA field. Inverse of sap_idoc_xml_to_records.",
-	    {"SELECT xml FROM sap_idoc_to_xml('flight.idoc', 'flight_dict.csv')"}, {"flat_path", "dict"});
+	    "SDATA field. 'encoding' ('utf-8' default, 'latin-1' or 'cp1252') says how the flat bytes become the "
+	    "UTF-8 of the XML. Inverse of sap_idoc_xml_to_records.",
+	    {"SELECT xml FROM sap_idoc_to_xml('flight.idoc', 'flight_dict.csv')",
+	     "SELECT xml FROM sap_idoc_to_xml('legacy.idoc', 'dict.csv', encoding := 'cp1252')"},
+	    {"flat_path", "dict", "encoding"});
 
 	RegisterDocTableFunction(
 	    loader,

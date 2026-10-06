@@ -66,3 +66,74 @@ statement error
 SELECT * FROM sap_idoc_read_fields('test/fixtures/flight.idoc','test/fixtures/flight_dict.csv', encoding='koi8-r');
 ----
 unsupported encoding 'koi8-r'
+
+# --- 'ascii' is strict (it is not an alias for "anything that happens to be UTF-8") ---------------
+query I
+SELECT count(*) FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='ascii');
+----
+2
+
+statement error
+SELECT passname
+FROM sap_idoc_read_segment('test/fixtures/flight_utf8.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='ascii');
+----
+not ASCII
+
+# --- the accepted spellings are pinned; near-misses and the empty string are rejected -----------------
+query I
+SELECT count(*) FROM (
+  SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='utf8')
+  UNION ALL SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='US-ASCII')
+  UNION ALL SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='latin1')
+  UNION ALL SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='iso8859-1')
+  UNION ALL SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding=NULL));
+----
+10
+
+statement error
+SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='utf_8');
+----
+unsupported encoding 'utf_8'
+
+statement error
+SELECT * FROM sap_idoc_read('test/fixtures/flight.idoc', encoding='');
+----
+unsupported encoding ''
+
+# sap_idoc_read_raw returns the exact bytes, so `encoding` cannot change its output, but a typo is still rejected
+statement error
+SELECT * FROM sap_idoc_read_raw('test/fixtures/flight.idoc', encoding='utf-16');
+----
+unsupported encoding 'utf-16'
+
+# --- flat -> XML: the XML is declared UTF-8, so the flat bytes must be decoded, not copied ----------
+statement error
+SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight_latin1.idoc','test/fixtures/flight_dict.csv');
+----
+not valid UTF-8
+
+query I
+SELECT xml LIKE '%<PASSNAME>MÜ€äŸ</PASSNAME>%'
+FROM sap_idoc_to_xml('test/fixtures/flight_latin1.idoc','test/fixtures/flight_dict.csv', encoding='cp1252');
+----
+true
+
+statement error
+SELECT xml FROM sap_idoc_to_xml('test/fixtures/flight.idoc','test/fixtures/flight_dict.csv', encoding='utf-16');
+----
+unsupported encoding 'utf-16'
+
+# --- IDoc-XML control records are already text: `encoding` must not decode them a second time -----------
+statement ok
+COPY (SELECT replace(content, 'A4HCLNT001', 'ÄHCLNT001') FROM read_text('test/fixtures/flight.xml'))
+  TO '__TEST_DIR__/ctl_umlaut.xml' (FORMAT csv, HEADER false, QUOTE '', ESCAPE '');
+
+query T
+SELECT sndprn FROM sap_idoc_read_control('__TEST_DIR__/ctl_umlaut.xml');
+----
+ÄHCLNT001
+
+query T
+SELECT sndprn FROM sap_idoc_read_control('__TEST_DIR__/ctl_umlaut.xml', encoding='cp1252');
+----
+ÄHCLNT001

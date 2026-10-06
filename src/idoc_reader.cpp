@@ -24,7 +24,7 @@ struct IdocReadBindData : public TableFunctionData {
 	Framing framing_override = Framing::FIXED;
 	bool lenient = false;
 	bool with_filename = false;
-	std::string encoding = "utf-8";
+	erpl_idoc::TextEncoding encoding = erpl_idoc::TextEncoding::UTF8;
 	ReaderKind kind = ReaderKind::DATA;
 };
 
@@ -152,8 +152,10 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 			continue;
 		}
 		output.SetValue(0, out_row, Value::BIGINT(rec.document_key));
+		// IDoc-XML control values were already parsed as UTF-8 text; only flat bytes need decoding.
+		auto encoding = l.is_xml ? erpl_idoc::TextEncoding::UTF8 : bind.encoding;
 		for (idx_t i = 0; i < EDI_DC40_FIELDS.size(); i++) {
-			auto raw = erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]), bind.encoding);
+			auto raw = erpl_idoc::DecodeText(GetFieldRaw(rec.bytes, EDI_DC40_FIELDS[i]), encoding);
 			output.SetValue(1 + i, out_row, Value(RTrim(raw)));
 		}
 		if (bind.with_filename) {

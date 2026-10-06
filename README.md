@@ -180,7 +180,7 @@ SELECT * FROM sap_idoc_read(['a.idoc', 'b.idoc']);          -- explicit list
 SELECT filename, idoctyp FROM sap_idoc_read_control('s3://bucket/idocs/*.idoc', filename=true);
 ```
 
-Parameters (all readers): `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'`
+Parameters (the flat-file readers; the XML readers take only a path): `framing` = `'fixed'` (default) \| `'lf'` \| `'crlf'`
 (auto-detected when omitted) · `lenient := true` salvages complete records from a
 truncated file · `encoding` (see below) · `filename := true`
 adds a source-file column (handy across a glob). `sap_idoc_read_fields` also takes
@@ -190,10 +190,18 @@ them as one row with the raw trimmed `SDATA`).
 **Encodings.** A flat IDoc is a byte stream with fixed record widths (524 / 1063 bytes), so
 `encoding` only says how the bytes of each text field become characters. Names are
 case-insensitive; anything else is rejected with `unsupported encoding 'X'`.
+`sap_idoc_read_raw` returns the exact bytes, so `encoding` cannot change its output (a typo is
+still rejected). IDoc-XML input is already text and is never re-decoded.
+
+> **Upgrading:** before this validation, an unknown name was silently ignored and a single-byte
+> (latin-1/cp1252) file read under the default `'utf-8'` failed deep inside DuckDB or returned
+> garbage. If a file was written in a single-byte code page, pass `encoding := 'latin-1'` (what
+> SAP itself assumes) or `'cp1252'`.
 
 | `encoding` | Meaning |
 |---|---|
-| `'utf-8'` (default; also `utf8`, `ascii`) | Bytes must be valid UTF-8, otherwise the query fails with a hint instead of returning garbage. Multi-byte characters make a record longer than 1063 bytes, so this suits ASCII or width-preserving files. |
+| `'utf-8'` (default; also `utf8`) | Bytes must be valid UTF-8, otherwise the query fails with a hint instead of returning garbage. Multi-byte characters make a record longer than 1063 bytes, so this suits ASCII or width-preserving files. |
+| `'ascii'` (`us-ascii`) | Every byte must be below `0x80`; anything else fails the query. Use it to detect unexpected high bytes. |
 | `'latin-1'` (`latin1`, `iso-8859-1`) | Byte *N* becomes U+00*N*. This is exactly what SAP does when it reads such a file (`OPEN DATASET … IN LEGACY BINARY MODE`), verified against an A4H system (`test/e2e/m8_encoding.sh`): `0x80` is the control character U+0080, not `€`. |
 | `'cp1252'` (`windows-1252`) | As `latin-1`, except `0x80`–`0x9F` map to `€ ‚ ƒ „ … † ‡ ˆ ‰ Š ‹ Œ Ž ‘ ’ “ ” • – — ˜ ™ š › œ ž Ÿ`. Use it for files produced by Windows tools. SAP itself would read those bytes as latin-1. |
 
@@ -227,7 +235,7 @@ Build the records with the pure encoders when composing from scratch:
 
 | Function | Direction |
 |---|---|
-| `sap_idoc_to_xml(flat_path, dict)` | flat → IDoc-XML text |
+| `sap_idoc_to_xml(flat_path, dict [, encoding])` | flat → IDoc-XML text (always UTF-8; `encoding` says how the flat bytes are decoded) |
 | `sap_idoc_xml_to_records(xml_path, dict)` | IDoc-XML → flat records (for `COPY … (FORMAT sap_idoc)`) |
 
 ### Dictionary tooling
