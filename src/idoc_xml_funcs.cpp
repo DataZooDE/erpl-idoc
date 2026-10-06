@@ -185,15 +185,18 @@ static unique_ptr<GlobalTableFunctionState> ToXmlInit(ClientContext &context, Ta
 			seg.hlevel = hl.empty() ? 1 : std::stoi(hl);
 			auto sdata = erpl_idoc::GetFieldRaw(rec.bytes, erpl_idoc::EDI_DD40_FIELDS[6]);
 			auto it = rules.find(seg.segnam);
-			if (it != rules.end()) {
-				for (auto &fr : it->second) {
-					std::string val;
-					if (fr.offset >= 0 && fr.length >= 0 &&
-					    static_cast<size_t>(fr.offset + fr.length) <= sdata.size()) {
-						val = erpl_idoc::RTrim(sdata.substr(fr.offset, fr.length));
-					}
-					seg.fields.push_back(XmlField{fr.field_name, val});
+			if (it == rules.end()) {
+				throw InvalidInputException("sap_idoc_to_xml: segment '%s' is not in the dictionary; refusing to "
+				                            "emit it empty (the payload would be lost)",
+				                            seg.segnam);
+			}
+			for (auto &fr : it->second) {
+				std::string val;
+				if (fr.offset >= 0 && fr.length >= 0 &&
+				    static_cast<size_t>(fr.offset + fr.length) <= sdata.size()) {
+					val = erpl_idoc::RTrim(sdata.substr(fr.offset, fr.length));
 				}
+				seg.fields.push_back(XmlField{fr.field_name, val});
 			}
 			idoc.segments.push_back(std::move(seg));
 		}
@@ -278,18 +281,20 @@ static unique_ptr<GlobalTableFunctionState> XmlToRecInit(ClientContext &context,
 			last_at_level[seg.hlevel] = segnum;
 
 			// SDATA from dict rules + segment field values (by name)
-			std::string sdata(erpl_idoc::SDATA_LEN, ' ');
 			auto it = rules.find(seg.segnam);
-			if (it != rules.end()) {
-				vector<int64_t> offs, lens;
-				vector<std::string> vals;
-				for (auto &fr : it->second) {
-					offs.push_back(fr.offset);
-					lens.push_back(fr.length);
-					vals.push_back(XmlFieldValue(seg.fields, fr.field_name));
-				}
-				sdata = erpl_idoc::EncodeSdata(offs, lens, vals);
+			if (it == rules.end()) {
+				throw InvalidInputException("sap_idoc_xml_to_records: segment '%s' is not in the dictionary; refusing "
+				                            "to write a blank SDATA (the payload would be lost)",
+				                            seg.segnam);
 			}
+			vector<int64_t> offs, lens;
+			vector<std::string> vals;
+			for (auto &fr : it->second) {
+				offs.push_back(fr.offset);
+				lens.push_back(fr.length);
+				vals.push_back(XmlFieldValue(seg.fields, fr.field_name));
+			}
+			auto sdata = erpl_idoc::EncodeSdata(offs, lens, vals);
 			auto rec = erpl_idoc::EncodeDataRecord(seg.segnam, mandt, docnum_i, segnum, psgnum, seg.hlevel, sdata);
 			state->recs.push_back(RawRec{dk, ri++, false, std::move(rec)});
 		}
