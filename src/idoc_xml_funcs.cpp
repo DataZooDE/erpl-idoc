@@ -2,7 +2,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/main/connection.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
+#include "duckdb/main/connection.hpp"
 #include "duckdb/common/string_util.hpp"
 
 #include "idoc_functions.hpp"
@@ -14,6 +14,7 @@
 
 #include <map>
 #include "erpl_idoc_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -55,13 +56,14 @@ static std::map<std::string, vector<FieldRule>> LoadDictRules(ClientContext &con
 	if (res->HasError()) {
 		throw BinderException("failed to read dictionary: " + res->GetError());
 	}
+	auto res_rows = duckdb_compat::FetchRows(*res);
 	std::map<std::string, vector<FieldRule>> rules;
-	for (idx_t i = 0; i < res->RowCount(); i++) {
-		auto seg = erpl_idoc::RTrim(res->GetValue(0, i).ToString());
+	for (idx_t i = 0; i < res_rows.size(); i++) {
+		auto seg = erpl_idoc::RTrim(res_rows[i][0].ToString());
 		FieldRule r;
-		r.field_name = res->GetValue(1, i).ToString();
-		r.offset = res->GetValue(2, i).GetValue<int64_t>();
-		r.length = res->GetValue(3, i).GetValue<int64_t>();
+		r.field_name = res_rows[i][1].ToString();
+		r.offset = res_rows[i][2].GetValue<int64_t>();
+		r.length = res_rows[i][3].GetValue<int64_t>();
 		rules[seg].push_back(std::move(r));
 	}
 	return rules;
@@ -90,7 +92,7 @@ struct XmlLongGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ReadXmlBind(ClientContext &, TableFunctionBindInput &input,
-                                            vector<LogicalType> &return_types, vector<string> &names) {
+                                            vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<XmlPathBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_read_xml");
@@ -157,13 +159,13 @@ struct SingleStringGlobalState : public GlobalTableFunctionState {
 	}
 };
 static unique_ptr<FunctionData> ToXmlBind(ClientContext &, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names) {
+                                          vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<FlatDictBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
 	bind->dict = input.inputs[1].GetValue<string>();
-	auto enc = input.named_parameters.find("encoding");
-	if (enc != input.named_parameters.end() && !enc->second.IsNull()) {
-		bind->encoding = CheckedEncodingParam(enc->second);
+	auto enc = duckdb_compat::FindNamedParameter(input.named_parameters, "encoding");
+	if (enc && !enc->IsNull()) {
+		bind->encoding = CheckedEncodingParam(*enc);
 	}
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_to_xml");
 	names = {"xml"};
@@ -249,7 +251,7 @@ struct RawRecGlobalState : public GlobalTableFunctionState {
 	}
 };
 static unique_ptr<FunctionData> XmlToRecBind(ClientContext &, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<FlatDictBindData>();
 	bind->path = input.inputs[0].GetValue<string>();
 	bind->dict = input.inputs[1].GetValue<string>();
@@ -344,7 +346,7 @@ void RegisterIdocXmlFunctions(ExtensionLoader &loader) {
 	TableFunction to_xml("sap_idoc_to_xml", {LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                     DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlScan), DATAZOO_GUARD(ERPL_IDOC_BANNER, ToXmlBind),
 	                     ToXmlInit);
-	to_xml.named_parameters["encoding"] = LogicalType::VARCHAR; // flat bytes -> the XML's UTF-8
+	duckdb_compat::AddNamedParameter(to_xml, "encoding", LogicalType::VARCHAR); // flat bytes -> the XML's UTF-8
 	RegisterDocTableFunction(
 	    loader, std::move(to_xml),
 	    "Convert a flat IDoc file to IDoc-XML (returns one row with the XML text). The dictionary names each "

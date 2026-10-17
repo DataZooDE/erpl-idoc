@@ -6,6 +6,7 @@
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -40,7 +41,8 @@ static string ParseSingleStringOption(const vector<Value> &values, const string 
 }
 
 static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFunctionBindInput &input,
-                                              const vector<string> &names, const vector<LogicalType> &sql_types) {
+                                              const duckdb_compat::CopyBindNames &names,
+                                              const vector<LogicalType> &sql_types) {
 	if (sql_types.size() != 1 ||
 	    (sql_types[0].id() != LogicalTypeId::BLOB && sql_types[0].id() != LogicalTypeId::VARCHAR)) {
 		throw BinderException(
@@ -49,12 +51,13 @@ static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFuncti
 	}
 	auto result = make_uniq<IdocWriteBindData>();
 	for (auto &opt : input.info.options) {
-		if (StringUtil::CIEquals(opt.first, "framing")) {
-			result->framing = erpl_idoc::FramingFromString(ParseSingleStringOption(opt.second, opt.first));
-		} else if (StringUtil::CIEquals(opt.first, "validate")) {
+		const std::string key = duckdb_compat::Str(opt.first);
+		if (StringUtil::CIEquals(key, "framing")) {
+			result->framing = erpl_idoc::FramingFromString(ParseSingleStringOption(opt.second, key));
+		} else if (StringUtil::CIEquals(key, "validate")) {
 			result->validate = opt.second.empty() || opt.second[0].IsNull() || BooleanValue::Get(opt.second[0]);
 		} else {
-			throw BinderException("COPY (FORMAT sap_idoc): unrecognized option \"%s\"", opt.first);
+			throw BinderException("COPY (FORMAT sap_idoc): unrecognized option \"%s\"", key);
 		}
 	}
 	return std::move(result);

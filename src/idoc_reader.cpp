@@ -6,6 +6,7 @@
 #include "idoc_doc.hpp"
 #include "telemetry.hpp"
 #include "erpl_idoc_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -32,25 +33,25 @@ struct IdocReadBindData : public TableFunctionData {
 static void ParseCommonBindArgs(ClientContext &context, TableFunctionBindInput &input, IdocReadBindData &bind) {
 	bind.files = IdocResolvePaths(context, input.inputs[0]);
 	auto &np = input.named_parameters;
-	if (np.count("framing") && !np["framing"].IsNull()) {
+	if (auto p_framing = duckdb_compat::FindNamedParameter(np, "framing"); p_framing && !p_framing->IsNull()) {
 		bind.has_framing_override = true;
-		bind.framing_override = erpl_idoc::FramingFromString(np["framing"].GetValue<string>());
+		bind.framing_override = erpl_idoc::FramingFromString(p_framing->GetValue<string>());
 	}
-	if (np.count("lenient") && !np["lenient"].IsNull()) {
-		bind.lenient = np["lenient"].GetValue<bool>();
+	if (auto p_lenient = duckdb_compat::FindNamedParameter(np, "lenient"); p_lenient && !p_lenient->IsNull()) {
+		bind.lenient = p_lenient->GetValue<bool>();
 	}
-	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind.encoding = CheckedEncodingParam(np["encoding"]);
+	if (auto p_encoding = duckdb_compat::FindNamedParameter(np, "encoding"); p_encoding && !p_encoding->IsNull()) {
+		bind.encoding = CheckedEncodingParam(*p_encoding);
 	}
-	if (np.count("filename") && !np["filename"].IsNull()) {
-		bind.with_filename = np["filename"].GetValue<bool>();
+	if (auto p_filename = duckdb_compat::FindNamedParameter(np, "filename"); p_filename && !p_filename->IsNull()) {
+		bind.with_filename = p_filename->GetValue<bool>();
 	}
 }
 
 static void MaybeAddFilenameColumn(const IdocReadBindData &bind, vector<LogicalType> &return_types,
-                                   vector<string> &names) {
+                                   duckdb_compat::BindNames &names) {
 	if (bind.with_filename) {
-		names.push_back("filename");
+		names.emplace_back("filename");
 		return_types.push_back(LogicalType::VARCHAR);
 	}
 }
@@ -73,7 +74,7 @@ static unique_ptr<LocalTableFunctionState> IdocInitLocal(ExecutionContext &, Tab
 // ---------------------------------------------------------------------------
 
 static unique_ptr<FunctionData> ReadIdocBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(context, input, *bind);
 	bind->kind = ReaderKind::DATA;
@@ -120,20 +121,20 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 // ---------------------------------------------------------------------------
 
 static unique_ptr<FunctionData> ReadIdocControlBind(ClientContext &context, TableFunctionBindInput &input,
-                                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                                    vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(context, input, *bind);
 	bind->kind = ReaderKind::CONTROL;
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_read_control");
 
-	names.push_back("document_key");
+	names.emplace_back("document_key");
 	return_types.push_back(LogicalType::BIGINT);
 	for (auto &f : EDI_DC40_FIELDS) {
 		std::string lower;
 		for (const char *p = f.name; *p; p++) {
 			lower += static_cast<char>(tolower(static_cast<unsigned char>(*p)));
 		}
-		names.push_back(lower);
+		names.emplace_back(lower);
 		return_types.push_back(LogicalType::VARCHAR);
 	}
 	MaybeAddFilenameColumn(*bind, return_types, names);
@@ -172,7 +173,7 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 // ---------------------------------------------------------------------------
 
 static unique_ptr<FunctionData> ReadIdocRawBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<IdocReadBindData>();
 	ParseCommonBindArgs(context, input, *bind);
 	bind->kind = ReaderKind::RAW;
@@ -209,19 +210,19 @@ static void ReadIdocRawScan(ClientContext &context, TableFunctionInput &data_p, 
 // ---------------------------------------------------------------------------
 
 static void AddReaderParams(TableFunction &f) {
-	f.named_parameters["framing"] = LogicalType::VARCHAR;  // 'fixed' | 'lf' | 'crlf'
-	f.named_parameters["lenient"] = LogicalType::BOOLEAN;  // salvage complete records
-	f.named_parameters["encoding"] = LogicalType::VARCHAR; // 'utf-8' (default) | 'latin-1' | 'cp1252'
-	f.named_parameters["filename"] = LogicalType::BOOLEAN; // add a source-file column
+	duckdb_compat::AddNamedParameter(f, "filename", LogicalType::BOOLEAN); // add a source-file column
+	duckdb_compat::AddNamedParameter(f, "encoding", LogicalType::VARCHAR); // 'utf-8' (default) | 'latin-1' | 'cp1252'
+	duckdb_compat::AddNamedParameter(f, "lenient", LogicalType::BOOLEAN);  // salvage complete records
+	duckdb_compat::AddNamedParameter(f, "framing", LogicalType::VARCHAR);  // 'fixed' | 'lf' | 'crlf'
 }
 
 // Build an overload set for a reader: the first argument is either a VARCHAR
 // path/glob or a LIST(VARCHAR) of paths/globs; everything else is shared.
 static TableFunctionSet MakeReaderSet(const string &name, table_function_t scan, table_function_bind_t bind,
                                       table_function_init_global_t init) {
-	TableFunctionSet set(name);
+	TableFunctionSet set(duckdb_compat::FunctionName(name));
 	for (auto &first : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::LIST(LogicalType::VARCHAR)}) {
-		TableFunction f(name, {first}, scan, bind, init, IdocInitLocal);
+		TableFunction f(duckdb_compat::FunctionName(name), {first}, scan, bind, init, IdocInitLocal);
 		AddReaderParams(f);
 		set.AddFunction(std::move(f));
 	}

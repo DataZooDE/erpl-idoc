@@ -1,0 +1,55 @@
+# name: test/sql/idoc_copy_failure.test
+# description: A COPY (FORMAT sap_idoc) that fails mid-stream never leaves a truncated file behind
+# group: [erpl_idoc]
+#
+# DuckDB 2.0 changed who cleans up after a failed COPY (FileSystem::AbortFileWrite,
+# CopyOutputLifecycle) and buffers far more before the first write, so the bad
+# record comes after ~21 MB of good ones: both lines really stream before failing.
+
+require erpl_idoc
+
+statement ok
+LOAD erpl_idoc
+
+# --- an existing target: the original must survive a failed overwrite --------------
+statement ok
+COPY (SELECT raw_record FROM sap_idoc_read_raw('test/fixtures/flight.idoc') ORDER BY record_index)
+  TO '__TEST_DIR__/copy_fail_target.idoc' (FORMAT sap_idoc);
+
+statement ok
+CREATE TABLE original AS SELECT md5(content) AS h, size FROM read_blob('__TEST_DIR__/copy_fail_target.idoc');
+
+statement error
+COPY (
+  SELECT raw_record FROM (
+    SELECT r.raw_record, n.range AS k, r.record_index AS i
+    FROM sap_idoc_read_raw('test/fixtures/flight.idoc') r, range(8000) n
+    UNION ALL
+    SELECT 'tooshort'::BLOB, 4000000, 0
+  ) ORDER BY k, i
+) TO '__TEST_DIR__/copy_fail_target.idoc' (FORMAT sap_idoc);
+----
+<REGEX>:.*Invalid Input Error.*
+
+query I
+SELECT (SELECT md5(content) FROM read_blob('__TEST_DIR__/copy_fail_target.idoc')) = (SELECT h FROM original)
+----
+true
+
+# --- a new target: nothing is left behind ------------------------------------------
+statement error
+COPY (
+  SELECT raw_record FROM (
+    SELECT r.raw_record, n.range AS k, r.record_index AS i
+    FROM sap_idoc_read_raw('test/fixtures/flight.idoc') r, range(8000) n
+    UNION ALL
+    SELECT 'tooshort'::BLOB, 4000000, 0
+  ) ORDER BY k, i
+) TO '__TEST_DIR__/copy_fail_new.idoc' (FORMAT sap_idoc);
+----
+<REGEX>:.*Invalid Input Error.*
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/copy_fail_new.idoc*')
+----
+0

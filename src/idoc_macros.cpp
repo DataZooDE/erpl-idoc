@@ -4,6 +4,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include "idoc_functions.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -24,14 +25,19 @@ namespace duckdb {
 //   COPY   (SELECT * FROM sap_idoc_dictionary(sap_idoc_params('MATMAS05')))
 //          TO 'matmas05.dict.parquet' (FORMAT parquet);
 
-static const DefaultMacro IDOC_SCALAR_MACROS[] = {
+// Scalar macros as one "(params) AS body" definition each: DuckDB 2.0 replaced
+// DefaultMacro's parameter arrays with that string, and duckdb_compat builds the
+// same macro from it on every line.
+struct IdocScalarMacro {
+	const char *name;
+	const char *definition;
+};
+static const IdocScalarMacro IDOC_SCALAR_MACROS[] = {
     // Build the IDOCTYPE_READ_COMPLETE import-parameter struct for sap_rfc_invoke.
-    {DEFAULT_SCHEMA,
-     "sap_idoc_params",
-     {"idoctyp", nullptr},
-     {{"cimtyp", "''"}, {"version", "'4'"}, {nullptr, nullptr}},
+    {"sap_idoc_params",
+     "(idoctyp, cimtyp := '', version := '4') AS "
      "struct_pack(\"PI_IDOCTYP\" := idoctyp, \"PI_CIMTYP\" := cimtyp, \"PI_VERSION\" := version)"},
-    {nullptr, nullptr, {nullptr}, {{nullptr, nullptr}}, nullptr}};
+    {nullptr, nullptr}};
 
 static const DefaultTableMacro IDOC_TABLE_MACROS[] = {
     // Fetch + normalize a segment dictionary (SPEC B4 schema) from a live system.
@@ -86,7 +92,8 @@ void RegisterIdocMacros(ExtensionLoader &loader) {
 	    "one."};
 	const char *scalar_examples[] = {"sap_idoc_params('FLIGHTBOOKING_CREATEFROMDAT01')"};
 	for (idx_t i = 0; IDOC_SCALAR_MACROS[i].name != nullptr; i++) {
-		auto info = DefaultFunctionGenerator::CreateInternalMacroInfo(IDOC_SCALAR_MACROS[i]);
+		auto info = duckdb_compat::ScalarMacroInfo(DEFAULT_SCHEMA, IDOC_SCALAR_MACROS[i].name,
+		                                           IDOC_SCALAR_MACROS[i].definition);
 		info->descriptions.push_back(MacroDoc(scalar_docs[i], {scalar_examples[i]}));
 		loader.RegisterFunction(*info);
 	}

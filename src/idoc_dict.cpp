@@ -1,6 +1,5 @@
 #include "duckdb.hpp"
 #include "duckdb/main/connection.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/common/string_util.hpp"
 
 #include "idoc_functions.hpp"
@@ -12,13 +11,21 @@
 #include <algorithm>
 #include <set>
 #include "erpl_idoc_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
-static idx_t ReqCol(MaterializedQueryResult &r, const char *name) {
+// A dictionary query's result, fetched in full: DuckDB 2.0 has no
+// MaterializedQueryResult, so the rows are read once through duckdb_compat.
+struct DictResult {
+	std::vector<std::string> names;
+	std::vector<std::vector<Value>> rows;
+};
+
+static idx_t ReqCol(const DictResult &r, const char *name) {
 	for (idx_t i = 0; i < r.names.size(); i++) {
 		if (StringUtil::CIEquals(r.names[i], name)) {
 			return i;
@@ -26,7 +33,7 @@ static idx_t ReqCol(MaterializedQueryResult &r, const char *name) {
 	}
 	throw BinderException("dictionary is missing the required column '%s'", name);
 }
-static bool OptCol(MaterializedQueryResult &r, const char *name, idx_t &out) {
+static bool OptCol(const DictResult &r, const char *name, idx_t &out) {
 	for (idx_t i = 0; i < r.names.size(); i++) {
 		if (StringUtil::CIEquals(r.names[i], name)) {
 			out = i;
@@ -42,13 +49,16 @@ static std::string ToStr(const Value &v) {
 	return v.IsNull() ? std::string() : v.ToString();
 }
 
-static unique_ptr<MaterializedQueryResult> QueryDict(ClientContext &context, const std::string &dict) {
+static DictResult QueryDict(ClientContext &context, const std::string &dict) {
 	Connection con(*context.db);
 	auto res = con.Query("SELECT * FROM " + DictSource(dict));
 	if (res->HasError()) {
 		throw BinderException("failed to read dictionary: " + res->GetError());
 	}
-	return res;
+	DictResult out;
+	out.names = duckdb_compat::ResultNames(*res);
+	out.rows = duckdb_compat::FetchRows(*res);
+	return out;
 }
 
 // ===========================================================================
@@ -78,7 +88,7 @@ struct DictRowsGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> DictSourceBind(ClientContext &, TableFunctionBindInput &input,
-                                               vector<LogicalType> &return_types, vector<string> &names,
+                                               vector<LogicalType> &return_types, duckdb_compat::BindNames &names,
                                                bool with_problem) {
 	auto bind = make_uniq<DictSourceBindData>();
 	bind->dict = input.inputs[0].GetValue<string>();
@@ -94,30 +104,30 @@ static unique_ptr<FunctionData> DictSourceBind(ClientContext &, TableFunctionBin
 	return std::move(bind);
 }
 static unique_ptr<FunctionData> OffsetsBind(ClientContext &c, TableFunctionBindInput &input,
-                                            vector<LogicalType> &rt, vector<string> &n) {
+                                            vector<LogicalType> &rt, duckdb_compat::BindNames &n) {
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_dict_offsets");
 	return DictSourceBind(c, input, rt, n, false);
 }
 
 static vector<DictRow> LoadRows(ClientContext &context, const std::string &dict, bool need_offset) {
 	auto res = QueryDict(context, dict);
-	idx_t c_seg = ReqCol(*res, "segnam"), c_pos = ReqCol(*res, "field_pos"), c_fn = ReqCol(*res, "field_name"),
-	      c_len = ReqCol(*res, "length");
+	idx_t c_seg = ReqCol(res, "segnam"), c_pos = ReqCol(res, "field_pos"), c_fn = ReqCol(res, "field_name"),
+	      c_len = ReqCol(res, "length");
 	idx_t c_dt, c_off;
-	bool has_dt = OptCol(*res, "datatype", c_dt);
-	bool has_off = OptCol(*res, "offset", c_off);
+	bool has_dt = OptCol(res, "datatype", c_dt);
+	bool has_off = OptCol(res, "offset", c_off);
 	if (need_offset && !has_off) {
 		throw BinderException("dictionary is missing the required column 'offset'");
 	}
 	vector<DictRow> rows;
-	for (idx_t i = 0; i < res->RowCount(); i++) {
+	for (auto &row : res.rows) {
 		DictRow r;
-		r.segnam = ToStr(res->GetValue(c_seg, i));
-		r.field_pos = ToI64(res->GetValue(c_pos, i));
-		r.field_name = ToStr(res->GetValue(c_fn, i));
-		r.length = ToI64(res->GetValue(c_len, i));
-		r.offset = has_off ? ToI64(res->GetValue(c_off, i)) : 0;
-		r.datatype = has_dt ? ToStr(res->GetValue(c_dt, i)) : std::string();
+		r.segnam = ToStr(row[c_seg]);
+		r.field_pos = ToI64(row[c_pos]);
+		r.field_name = ToStr(row[c_fn]);
+		r.length = ToI64(row[c_len]);
+		r.offset = has_off ? ToI64(row[c_off]) : 0;
+		r.datatype = has_dt ? ToStr(row[c_dt]) : std::string();
 		rows.push_back(std::move(r));
 	}
 	std::stable_sort(rows.begin(), rows.end(), [](const DictRow &a, const DictRow &b) {
@@ -175,7 +185,7 @@ struct ValidateGlobalState : public GlobalTableFunctionState {
 	}
 };
 static unique_ptr<FunctionData> ValidateBind(ClientContext &c, TableFunctionBindInput &input, vector<LogicalType> &rt,
-                                             vector<string> &n) {
+                                             duckdb_compat::BindNames &n) {
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_dict_validate");
 	return DictSourceBind(c, input, rt, n, true);
 }
@@ -248,7 +258,7 @@ static Value StructField(const Value &s, const char *name) {
 	auto &types = StructType::GetChildTypes(s.type());
 	auto &vals = StructValue::GetChildren(s);
 	for (idx_t i = 0; i < types.size(); i++) {
-		if (StringUtil::CIEquals(types[i].first, name)) {
+		if (StringUtil::CIEquals(duckdb_compat::Str(types[i].first), name)) {
 			return vals[i];
 		}
 	}
