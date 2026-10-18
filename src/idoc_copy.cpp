@@ -6,6 +6,7 @@
 
 #include "idoc_functions.hpp"
 #include "idoc_format.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -25,8 +26,31 @@ struct IdocWriteBindData : public TableFunctionData {
 	bool validate = true; // reject records that are not 524 (control) or 1063 (data) bytes
 };
 
+// A local target is written to `<target>.erpl_idoc.tmp` and renamed into place only
+// in Finalize, so a COPY that fails mid-stream never leaves a file behind -- not even
+// on DuckDB 1.4, which does not clean up after a failed COPY (1.5+ does). A remote
+// target (s3://, gdrive://, ...) is written directly: its filesystem may not support
+// a rename, and DuckDB 1.5+ removes a failed COPY's output there itself.
 struct IdocWriteGlobalState : public GlobalFunctionData {
+	explicit IdocWriteGlobalState(FileSystem &fs_p) : fs(fs_p) {
+	}
+	~IdocWriteGlobalState() override {
+		if (tmp_path.empty() || published) {
+			return;
+		}
+		// Finalize never ran: the COPY failed. Never throws from a destructor.
+		try {
+			handle.reset();
+			fs.RemoveFile(tmp_path);
+		} catch (...) {
+		}
+	}
+
+	FileSystem &fs;
 	unique_ptr<FileHandle> handle;
+	string tmp_path;    // empty when writing the target directly
+	string target_path; // where the file is published
+	bool published = false;
 	mutex lock;
 };
 
@@ -40,7 +64,8 @@ static string ParseSingleStringOption(const vector<Value> &values, const string 
 }
 
 static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFunctionBindInput &input,
-                                              const vector<string> &names, const vector<LogicalType> &sql_types) {
+                                              const duckdb_compat::CopyBindNames &names,
+                                              const vector<LogicalType> &sql_types) {
 	if (sql_types.size() != 1 ||
 	    (sql_types[0].id() != LogicalTypeId::BLOB && sql_types[0].id() != LogicalTypeId::VARCHAR)) {
 		throw BinderException(
@@ -49,12 +74,13 @@ static unique_ptr<FunctionData> IdocWriteBind(ClientContext &context, CopyFuncti
 	}
 	auto result = make_uniq<IdocWriteBindData>();
 	for (auto &opt : input.info.options) {
-		if (StringUtil::CIEquals(opt.first, "framing")) {
-			result->framing = erpl_idoc::FramingFromString(ParseSingleStringOption(opt.second, opt.first));
-		} else if (StringUtil::CIEquals(opt.first, "validate")) {
+		const std::string key = duckdb_compat::Str(opt.first);
+		if (StringUtil::CIEquals(key, "framing")) {
+			result->framing = erpl_idoc::FramingFromString(ParseSingleStringOption(opt.second, key));
+		} else if (StringUtil::CIEquals(key, "validate")) {
 			result->validate = opt.second.empty() || opt.second[0].IsNull() || BooleanValue::Get(opt.second[0]);
 		} else {
-			throw BinderException("COPY (FORMAT sap_idoc): unrecognized option \"%s\"", opt.first);
+			throw BinderException("COPY (FORMAT sap_idoc): unrecognized option \"%s\"", key);
 		}
 	}
 	return std::move(result);
@@ -64,8 +90,12 @@ static unique_ptr<GlobalFunctionData> IdocWriteInitGlobal(ClientContext &context
                                                           const string &file_path) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW;
-	auto result = make_uniq<IdocWriteGlobalState>();
-	result->handle = fs.OpenFile(file_path, flags);
+	auto result = make_uniq<IdocWriteGlobalState>(fs);
+	result->target_path = file_path;
+	if (!FileSystem::IsRemoteFile(file_path)) {
+		result->tmp_path = file_path + ".erpl_idoc.tmp";
+	}
+	result->handle = fs.OpenFile(result->tmp_path.empty() ? file_path : result->tmp_path, flags);
 	return std::move(result);
 }
 
@@ -135,6 +165,15 @@ static void IdocWriteFinalize(ClientContext &context, FunctionData &bind_data, G
 	if (state.handle) {
 		state.handle->Close();
 		state.handle.reset();
+	}
+	if (!state.tmp_path.empty() && !state.published) {
+		// DuckDB 1.4's Windows MoveFile does not replace an existing target. Writing the
+		// target directly truncated it anyway (FILE_CREATE_NEW), so remove it first.
+		if (state.fs.FileExists(state.target_path)) {
+			state.fs.RemoveFile(state.target_path);
+		}
+		state.fs.MoveFile(state.tmp_path, state.target_path);
+		state.published = true;
 	}
 }
 

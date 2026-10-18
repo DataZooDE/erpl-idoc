@@ -23,6 +23,12 @@ include_directories(
     posthog-telemetry/include
 )
 
+# duckdb-compat: one source tree for DuckDB 1.4 LTS, 1.5 and 2.0. Header-only
+# API-shape shims (DataZooDE/duckdb-compat); no `#if` on DuckDB versions at
+# call sites. Include path only -- DuckDB export()s extension targets, so
+# linking the duckdb_compat target would break CMake's generate step.
+include_directories(duckdb-compat/include)
+
 # PostHog telemetry (same anonymous, opt-out telemetry as erpl / erpl-web).
 # posthog-telemetry/CMakeLists.txt links OpenSSL itself, so we don't add it here
 # (linking a subdir target's libs from the parent needs CMP0079/CMake 3.13+).
@@ -70,6 +76,15 @@ endif()
 # Link tinyxml2, telemetry, and OpenSSL into both the static and loadable extension.
 target_link_libraries(${EXTENSION_NAME} tinyxml2::tinyxml2 posthog_telemetry datazoo_banner OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} tinyxml2::tinyxml2 posthog_telemetry datazoo_banner OpenSSL::SSL OpenSSL::Crypto)
+
+# DuckDB 2.0's bundled httplib (used by posthog-telemetry) reads the macOS
+# keychain whenever it is built with OpenSSL, so the link needs these
+# frameworks; harmless on 1.x. See duckdb-compat README.
+if(APPLE)
+  foreach(t ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+    target_link_libraries(${t} "-framework CoreFoundation" "-framework Security")
+  endforeach()
+endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

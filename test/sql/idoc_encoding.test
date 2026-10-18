@@ -9,14 +9,14 @@ require erpl_idoc
 
 # --- latin-1 follows SAP's legacy binary mode: byte N -> U+00N (0x80/0x9F are C1 controls) -----
 query I
-SELECT list_transform(string_split(substr(passname, 1, 5), ''), x -> unicode(x))
+SELECT list_transform(string_split(substr(passname, 1, 5), ''), lambda x: unicode(x))
 FROM sap_idoc_read_segment('test/fixtures/flight_latin1.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='latin-1');
 ----
 [77, 220, 128, 228, 159]
 
 # --- cp1252 differs from latin-1 exactly in 0x80-0x9F (EUR, Y-diaeresis) ---------------------
 query I
-SELECT list_transform(string_split(substr(passname, 1, 5), ''), x -> unicode(x))
+SELECT list_transform(string_split(substr(passname, 1, 5), ''), lambda x: unicode(x))
 FROM sap_idoc_read_segment('test/fixtures/flight_latin1.idoc','E1BPSBONEW','test/fixtures/flight_dict.csv', encoding='cp1252');
 ----
 [77, 220, 8364, 228, 376]

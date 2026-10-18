@@ -1,6 +1,6 @@
 #include "duckdb.hpp"
 #include "duckdb/main/connection.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
+#include "duckdb/main/connection.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/date.hpp"
 
@@ -15,6 +15,7 @@
 #include <cctype>
 #include <map>
 #include "erpl_idoc_banner.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
@@ -135,7 +136,7 @@ static bool ParseTypedValue(const TypedFieldRule &f, const std::string &raw, Val
 			return false;
 		}
 		string error;
-		return Value(text).DefaultTryCastAs(f.type, out, &error, true);
+		return duckdb_compat::TryCastValue(Value(text), f.type, out, &error, true);
 	}
 	default:
 		return false;
@@ -156,7 +157,7 @@ struct ReadSegmentBindData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFunctionBindInput &input,
-                                                vector<LogicalType> &return_types, vector<string> &names) {
+                                                vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<ReadSegmentBindData>();
 	bind->files = IdocResolvePaths(context, input.inputs[0]);
 	bind->segnam = input.inputs[1].GetValue<string>();
@@ -164,27 +165,27 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_read_segment");
 
 	auto &np = input.named_parameters;
-	if (np.count("framing") && !np["framing"].IsNull()) {
+	if (auto p_framing = duckdb_compat::FindNamedParameter(np, "framing"); p_framing && !p_framing->IsNull()) {
 		bind->has_framing_override = true;
-		bind->framing_override = erpl_idoc::FramingFromString(np["framing"].GetValue<string>());
+		bind->framing_override = erpl_idoc::FramingFromString(p_framing->GetValue<string>());
 	}
-	if (np.count("lenient") && !np["lenient"].IsNull()) {
-		bind->lenient = np["lenient"].GetValue<bool>();
+	if (auto p_lenient = duckdb_compat::FindNamedParameter(np, "lenient"); p_lenient && !p_lenient->IsNull()) {
+		bind->lenient = p_lenient->GetValue<bool>();
 	}
-	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind->encoding = CheckedEncodingParam(np["encoding"]);
+	if (auto p_encoding = duckdb_compat::FindNamedParameter(np, "encoding"); p_encoding && !p_encoding->IsNull()) {
+		bind->encoding = CheckedEncodingParam(*p_encoding);
 	}
-	if (np.count("filename") && !np["filename"].IsNull()) {
-		bind->with_filename = np["filename"].GetValue<bool>();
+	if (auto p_filename = duckdb_compat::FindNamedParameter(np, "filename"); p_filename && !p_filename->IsNull()) {
+		bind->with_filename = p_filename->GetValue<bool>();
 	}
-	if (np.count("typed") && !np["typed"].IsNull()) {
-		bind->typed = np["typed"].GetValue<bool>();
+	if (auto p_typed = duckdb_compat::FindNamedParameter(np, "typed"); p_typed && !p_typed->IsNull()) {
+		bind->typed = p_typed->GetValue<bool>();
 	}
-	if (np.count("strict") && !np["strict"].IsNull()) {
+	if (auto p_strict = duckdb_compat::FindNamedParameter(np, "strict"); p_strict && !p_strict->IsNull()) {
 		if (!bind->typed) {
 			throw BinderException("sap_idoc_read_segment: strict requires typed := true");
 		}
-		bind->strict = np["strict"].GetValue<bool>();
+		bind->strict = p_strict->GetValue<bool>();
 	}
 
 	// Load the slicing rules for this segment from the dictionary relation. `decimals` is an optional
@@ -193,7 +194,7 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	string decimals_expr = "NULL";
 	auto probe = bind->typed ? con.Query("SELECT * FROM " + DictSource(dict) + " LIMIT 0") : nullptr;
 	if (probe && !probe->HasError()) {
-		for (auto &col : probe->names) {
+		for (auto &col : duckdb_compat::ResultNames(*probe)) {
 			if (UpperAscii(col) == "DECIMALS") {
 				// TRY_CAST: a CSV may type the column as text; a non-numeric entry just means "not supplied"
 				decimals_expr = "TRY_CAST(\"" + StringUtil::Replace(col, "\"", "\"\"") + "\" AS BIGINT)";
@@ -206,20 +207,21 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 	if (result->HasError()) {
 		throw BinderException("sap_idoc_read_segment: failed to read dictionary: " + result->GetError());
 	}
-	if (result->RowCount() == 0) {
+	auto result_rows = duckdb_compat::FetchRows(*result);
+	if (result_rows.size() == 0) {
 		throw BinderException("sap_idoc_read_segment: dictionary has no fields for segment '%s'", bind->segnam);
 	}
 
 	names = {"document_key", "segnum"};
 	return_types = {LogicalType::BIGINT, LogicalType::VARCHAR};
-	for (idx_t i = 0; i < result->RowCount(); i++) {
+	for (idx_t i = 0; i < result_rows.size(); i++) {
 		TypedFieldRule rule;
-		rule.name = result->GetValue(0, i).ToString();
-		rule.offset = result->GetValue(1, i).GetValue<int64_t>();
-		rule.length = result->GetValue(2, i).GetValue<int64_t>();
-		auto dt = result->GetValue(3, i);
+		rule.name = result_rows[i][0].ToString();
+		rule.offset = result_rows[i][1].GetValue<int64_t>();
+		rule.length = result_rows[i][2].GetValue<int64_t>();
+		auto dt = result_rows[i][3];
 		rule.datatype = dt.IsNull() ? "" : dt.ToString();
-		auto decimals = result->GetValue(4, i);
+		auto decimals = result_rows[i][4];
 		rule.decimals = decimals.IsNull() ? -1 : decimals.GetValue<int64_t>();
 		if (rule.offset < 0 || rule.length < 0 || rule.offset > static_cast<int64_t>(erpl_idoc::SDATA_LEN) ||
 		    rule.length > static_cast<int64_t>(erpl_idoc::SDATA_LEN) - rule.offset) {
@@ -233,12 +235,12 @@ static unique_ptr<FunctionData> ReadSegmentBind(ClientContext &context, TableFun
 		for (char c : rule.name) {
 			lower += static_cast<char>(tolower(static_cast<unsigned char>(c)));
 		}
-		names.push_back(lower);
+		names.emplace_back(lower);
 		return_types.push_back(rule.type); // VARCHAR unless typed := true maps this field's datatype
 		bind->fields.push_back(std::move(rule));
 	}
 	if (bind->with_filename) {
-		names.push_back("filename");
+		names.emplace_back("filename");
 		return_types.push_back(LogicalType::VARCHAR);
 	}
 	return std::move(bind);
@@ -317,28 +319,28 @@ struct ReadFieldsBindData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunctionBindInput &input,
-                                               vector<LogicalType> &return_types, vector<string> &names) {
+                                               vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	auto bind = make_uniq<ReadFieldsBindData>();
 	bind->files = IdocResolvePaths(context, input.inputs[0]);
 	auto dict = input.inputs[1].GetValue<string>();
 	PostHogTelemetry::Instance().RecordFunctionCall("sap_idoc_read_fields");
 
 	auto &np = input.named_parameters;
-	if (np.count("framing") && !np["framing"].IsNull()) {
+	if (auto p_framing = duckdb_compat::FindNamedParameter(np, "framing"); p_framing && !p_framing->IsNull()) {
 		bind->has_framing_override = true;
-		bind->framing_override = erpl_idoc::FramingFromString(np["framing"].GetValue<string>());
+		bind->framing_override = erpl_idoc::FramingFromString(p_framing->GetValue<string>());
 	}
-	if (np.count("lenient") && !np["lenient"].IsNull()) {
-		bind->lenient = np["lenient"].GetValue<bool>();
+	if (auto p_lenient = duckdb_compat::FindNamedParameter(np, "lenient"); p_lenient && !p_lenient->IsNull()) {
+		bind->lenient = p_lenient->GetValue<bool>();
 	}
-	if (np.count("encoding") && !np["encoding"].IsNull()) {
-		bind->encoding = CheckedEncodingParam(np["encoding"]);
+	if (auto p_encoding = duckdb_compat::FindNamedParameter(np, "encoding"); p_encoding && !p_encoding->IsNull()) {
+		bind->encoding = CheckedEncodingParam(*p_encoding);
 	}
-	if (np.count("include_unknown") && !np["include_unknown"].IsNull()) {
-		bind->include_unknown = np["include_unknown"].GetValue<bool>();
+	if (auto p_include_unknown = duckdb_compat::FindNamedParameter(np, "include_unknown"); p_include_unknown && !p_include_unknown->IsNull()) {
+		bind->include_unknown = p_include_unknown->GetValue<bool>();
 	}
-	if (np.count("filename") && !np["filename"].IsNull()) {
-		bind->with_filename = np["filename"].GetValue<bool>();
+	if (auto p_filename = duckdb_compat::FindNamedParameter(np, "filename"); p_filename && !p_filename->IsNull()) {
+		bind->with_filename = p_filename->GetValue<bool>();
 	}
 
 	// Load slicing rules for ALL segments once, grouped by segment name.
@@ -349,14 +351,15 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 	if (result->HasError()) {
 		throw BinderException("sap_idoc_read_fields: failed to read dictionary: " + result->GetError());
 	}
-	for (idx_t i = 0; i < result->RowCount(); i++) {
-		auto seg = result->GetValue(0, i).ToString();
+	auto result_rows = duckdb_compat::FetchRows(*result);
+	for (idx_t i = 0; i < result_rows.size(); i++) {
+		auto seg = result_rows[i][0].ToString();
 		TypedFieldRule rule;
-		rule.field_pos = result->GetValue(1, i).IsNull() ? 0 : result->GetValue(1, i).GetValue<int64_t>();
-		rule.name = result->GetValue(2, i).ToString();
-		rule.offset = result->GetValue(3, i).GetValue<int64_t>();
-		rule.length = result->GetValue(4, i).GetValue<int64_t>();
-		auto dt = result->GetValue(5, i);
+		rule.field_pos = result_rows[i][1].IsNull() ? 0 : result_rows[i][1].GetValue<int64_t>();
+		rule.name = result_rows[i][2].ToString();
+		rule.offset = result_rows[i][3].GetValue<int64_t>();
+		rule.length = result_rows[i][4].GetValue<int64_t>();
+		auto dt = result_rows[i][5];
 		rule.datatype = dt.IsNull() ? "" : dt.ToString();
 		if (rule.offset < 0 || rule.length < 0 || rule.offset > static_cast<int64_t>(erpl_idoc::SDATA_LEN) ||
 		    rule.length > static_cast<int64_t>(erpl_idoc::SDATA_LEN) - rule.offset) {
@@ -371,7 +374,7 @@ static unique_ptr<FunctionData> ReadFieldsBind(ClientContext &context, TableFunc
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::INTEGER,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	if (bind->with_filename) {
-		names.push_back("filename");
+		names.emplace_back("filename");
 		return_types.push_back(LogicalType::VARCHAR);
 	}
 	return std::move(bind);
@@ -449,12 +452,12 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 			TableFunction f("sap_idoc_read_segment", {first, LogicalType::VARCHAR, LogicalType::VARCHAR},
 			                DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadSegmentScan),
 	                DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadSegmentBind), ReadSegmentInitGlobal, TypedInitLocal);
-			f.named_parameters["framing"] = LogicalType::VARCHAR;
-			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
-			f.named_parameters["encoding"] = LogicalType::VARCHAR;
-			f.named_parameters["filename"] = LogicalType::BOOLEAN;
-			f.named_parameters["typed"] = LogicalType::BOOLEAN;
-			f.named_parameters["strict"] = LogicalType::BOOLEAN;
+			duckdb_compat::AddNamedParameter(f, "filename", LogicalType::BOOLEAN);
+			duckdb_compat::AddNamedParameter(f, "encoding", LogicalType::VARCHAR);
+			duckdb_compat::AddNamedParameter(f, "lenient", LogicalType::BOOLEAN);
+			duckdb_compat::AddNamedParameter(f, "framing", LogicalType::VARCHAR);
+			duckdb_compat::AddNamedParameter(f, "typed", LogicalType::BOOLEAN);
+			duckdb_compat::AddNamedParameter(f, "strict", LogicalType::BOOLEAN);
 			set.AddFunction(std::move(f));
 		}
 		RegisterDocTableFunctionSet(
@@ -477,11 +480,11 @@ void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {
 			TableFunction f("sap_idoc_read_fields", {first, LogicalType::VARCHAR}, DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadFieldsScan),
 	                DATAZOO_GUARD(ERPL_IDOC_BANNER, ReadFieldsBind),
 			                ReadFieldsInitGlobal, TypedInitLocal);
-			f.named_parameters["framing"] = LogicalType::VARCHAR;
-			f.named_parameters["lenient"] = LogicalType::BOOLEAN;
-			f.named_parameters["encoding"] = LogicalType::VARCHAR;
-			f.named_parameters["include_unknown"] = LogicalType::BOOLEAN;
-			f.named_parameters["filename"] = LogicalType::BOOLEAN;
+			duckdb_compat::AddNamedParameter(f, "filename", LogicalType::BOOLEAN);
+			duckdb_compat::AddNamedParameter(f, "include_unknown", LogicalType::BOOLEAN);
+			duckdb_compat::AddNamedParameter(f, "encoding", LogicalType::VARCHAR);
+			duckdb_compat::AddNamedParameter(f, "lenient", LogicalType::BOOLEAN);
+			duckdb_compat::AddNamedParameter(f, "framing", LogicalType::VARCHAR);
 			set.AddFunction(std::move(f));
 		}
 		RegisterDocTableFunctionSet(

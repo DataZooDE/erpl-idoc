@@ -7,11 +7,13 @@
 #include "duckdb.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
+#include "duckdb_compat.hpp"
 
 namespace duckdb {
 
 inline void RegisterDocTableFunction(ExtensionLoader &loader, TableFunction fun, string description,
                                      vector<string> examples, vector<string> parameter_names = {}) {
+	duckdb_compat::NameParameters(fun, parameter_names);
 	CreateTableFunctionInfo info(std::move(fun));
 	FunctionDescription d;
 	d.description = std::move(description);
@@ -40,6 +42,7 @@ inline void RegisterDocTableFunction(ExtensionLoader &loader, TableFunction fun,
 // sites below supply both. The metadata was written correctly and thrown away silently.
 inline void RegisterDocTableFunctionSet(ExtensionLoader &loader, TableFunctionSet set, string description,
                                         vector<string> examples, vector<string> parameter_names = {}) {
+	duckdb_compat::ForEachFunction(set, [&](TableFunction &fun) { duckdb_compat::NameParameters(fun, parameter_names); });
 	CreateTableFunctionInfo info(std::move(set));
 	FunctionDescription d;
 	d.description = std::move(description);
@@ -52,6 +55,10 @@ inline void RegisterDocTableFunctionSet(ExtensionLoader &loader, TableFunctionSe
 
 inline void RegisterDocScalarFunction(ExtensionLoader &loader, ScalarFunction fun, string description,
                                       vector<string> examples, vector<string> parameter_names = {}) {
+	duckdb_compat::NameParameters(fun, parameter_names);
+	// Every idoc scalar can throw on malformed input. DuckDB 2.0 turns an execution
+	// error from a function not marked fallible into an INTERNAL error.
+	duckdb_compat::SetFallible(fun);
 	CreateScalarFunctionInfo info(std::move(fun));
 	FunctionDescription d;
 	d.description = std::move(description);
