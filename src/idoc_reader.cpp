@@ -113,7 +113,7 @@ static void ReadIdocScan(ClientContext &context, TableFunctionInput &data_p, Dat
 		IdocConsume(l);
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ static void ReadIdocControlScan(ClientContext &context, TableFunctionInput &data
 		IdocConsume(l);
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ static void ReadIdocRawScan(ClientContext &context, TableFunctionInput &data_p, 
 		IdocConsume(l);
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 // ---------------------------------------------------------------------------

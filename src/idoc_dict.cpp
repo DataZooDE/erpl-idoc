@@ -167,7 +167,7 @@ static void OffsetsScan(ClientContext &, TableFunctionInput &data_p, DataChunk &
 		output.SetValue(5, n, r.datatype.empty() ? Value(LogicalType::VARCHAR) : Value(r.datatype));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 // ===========================================================================
@@ -233,7 +233,7 @@ static void ValidateScan(ClientContext &, TableFunctionInput &data_p, DataChunk 
 		output.SetValue(4, n, Value(p.problem));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 // ===========================================================================
