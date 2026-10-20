@@ -140,7 +140,7 @@ static void ReadXmlScan(ClientContext &, TableFunctionInput &data_p, DataChunk &
 		output.SetValue(5, n, Value(erpl_idoc::RTrim(r.value)));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 // ===========================================================================
@@ -225,12 +225,12 @@ static unique_ptr<GlobalTableFunctionState> ToXmlInit(ClientContext &context, Ta
 static void ToXmlScan(ClientContext &, TableFunctionInput &data_p, DataChunk &output) {
 	auto &gs = data_p.global_state->Cast<SingleStringGlobalState>();
 	if (gs.emitted) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	gs.emitted = true;
 	output.SetValue(0, 0, Value(gs.value));
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 }
 
 // ===========================================================================
@@ -331,7 +331,7 @@ static void XmlToRecScan(ClientContext &, TableFunctionInput &data_p, DataChunk 
 		output.SetValue(3, n, Value::BLOB_RAW(r.bytes));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 void RegisterIdocXmlFunctions(ExtensionLoader &loader) {

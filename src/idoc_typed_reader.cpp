@@ -300,7 +300,7 @@ static void ReadSegmentScan(ClientContext &context, TableFunctionInput &data_p, 
 		IdocConsume(l);
 		out_row++;
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 // --- sap_idoc_read_fields: decode ALL fields of ALL records in one call ---------
@@ -440,7 +440,7 @@ static void ReadFieldsScan(ClientContext &context, TableFunctionInput &data_p, D
 			IdocConsume(l);
 		}
 	}
-	output.SetCardinality(out_row);
+	duckdb_compat::SetChildCardinality(output, out_row);
 }
 
 void RegisterIdocTypedReaderFunctions(ExtensionLoader &loader) {

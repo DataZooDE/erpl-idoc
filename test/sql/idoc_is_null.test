@@ -1,0 +1,57 @@
+# name: test/sql/idoc_is_null.test
+# description: IS NULL over reader output sees the real NULLs (DuckDB 2.0: vectors carry their own size)
+# group: [erpl_idoc]
+#
+# On DuckDB 2.0 a table function that ends its chunk with the deprecated
+# DataChunk::SetCardinality leaves its vectors at size 0, and IS NULL -- which
+# loops over Vector::size() -- returns uninitialised memory. Projected IS NULL
+# over known NULL and non-NULL values pins it down deterministically.
+
+require erpl_idoc
+
+statement ok
+CREATE TABLE typed_dict AS SELECT * FROM (VALUES
+  ('ZTYPED', 1, 'DAT', 0, 8, 'DATS', NULL::BIGINT),
+  ('ZTYPED', 2, 'TIM', 8, 6, 'TIMS', NULL),
+  ('ZTYPED', 3, 'AMT', 14, 12, 'DEC', 2),
+  ('ZTYPED', 4, 'QTY', 26, 10, 'QUAN', 3),
+  ('ZTYPED', 5, 'NOD', 36, 8, 'DEC', NULL),
+  ('ZTYPED', 6, 'ID', 44, 6, 'NUMC', NULL),
+  ('ZTYPED', 7, 'TXT', 50, 5, 'CHAR', NULL)
+) t(segnam, field_pos, field_name, "offset", length, datatype, decimals);
+
+statement ok
+COPY (
+  SELECT raw FROM (
+    SELECT 0 AS ord, raw_record AS raw FROM sap_idoc_read_raw('test/fixtures/flight.idoc') WHERE record_index = 0
+    UNION ALL
+    SELECT 1, sap_idoc_encode_data_record('ZTYPED','001',8,1,0,1,
+      sap_idoc_encode_sdata([0,8,14,26,36,44,50],[8,6,12,10,8,6,5],
+        ['20261301','250000','12x4','1.5','','','']))
+  ) ORDER BY ord
+) TO '__TEST_DIR__/isnull_bad.idoc' (FORMAT sap_idoc);
+
+# dat, tim, amt are NULL (invalid values, strict := false); qty is 1.5 -- not NULL
+query IIII
+SELECT dat IS NULL, tim IS NULL, amt IS NULL, qty IS NULL
+FROM sap_idoc_read_segment('__TEST_DIR__/isnull_bad.idoc', 'ZTYPED', 'typed_dict', typed := true, strict := false);
+----
+true	true	true	false
+
+query IIII
+SELECT dat IS NOT NULL, tim IS NOT NULL, amt IS NOT NULL, qty IS NOT NULL
+FROM sap_idoc_read_segment('__TEST_DIR__/isnull_bad.idoc', 'ZTYPED', 'typed_dict', typed := true, strict := false);
+----
+false	false	false	true
+
+# raw reader: no record is NULL
+query II
+SELECT count(*), count(*) FILTER (WHERE raw_record IS NULL)
+FROM sap_idoc_read_raw('test/fixtures/flight.idoc');
+----
+3	0
+
+query I
+SELECT bool_and(raw_record IS NOT NULL) FROM sap_idoc_read_raw('test/fixtures/flight.idoc');
+----
+true
