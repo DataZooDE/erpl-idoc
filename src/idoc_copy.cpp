@@ -27,10 +27,10 @@ struct IdocWriteBindData : public TableFunctionData {
 };
 
 // A local target is written to `<target>.erpl_idoc.tmp` and renamed into place only
-// in Finalize, so a COPY that fails mid-stream never leaves a file behind -- not even
-// on DuckDB 1.4, which does not clean up after a failed COPY (1.5+ does). A remote
+// in Finalize, so a COPY that fails mid-stream never leaves a file behind, whether or
+// not DuckDB itself cleans up after a failed COPY (1.5+ does; 1.4 did not). A remote
 // target (s3://, gdrive://, ...) is written directly: its filesystem may not support
-// a rename, and DuckDB 1.5+ removes a failed COPY's output there itself.
+// a rename, and DuckDB removes a failed COPY's output there itself.
 struct IdocWriteGlobalState : public GlobalFunctionData {
 	explicit IdocWriteGlobalState(FileSystem &fs_p) : fs(fs_p) {
 	}
@@ -167,8 +167,9 @@ static void IdocWriteFinalize(ClientContext &context, FunctionData &bind_data, G
 		state.handle.reset();
 	}
 	if (!state.tmp_path.empty() && !state.published) {
-		// DuckDB 1.4's Windows MoveFile does not replace an existing target. Writing the
-		// target directly truncated it anyway (FILE_CREATE_NEW), so remove it first.
+		// MoveFile is not guaranteed to replace an existing target (DuckDB 1.4's Windows
+		// MoveFile did not). Writing the target directly truncated it anyway
+		// (FILE_CREATE_NEW), so remove it first.
 		if (state.fs.FileExists(state.target_path)) {
 			state.fs.RemoveFile(state.target_path);
 		}

@@ -23,7 +23,7 @@ include_directories(
     posthog-telemetry/include
 )
 
-# duckdb-compat: one source tree for DuckDB 1.4 LTS, 1.5 and 2.0. Header-only
+# duckdb-compat: one source tree for DuckDB 1.5.6 and 2.0. Header-only
 # API-shape shims (DataZooDE/duckdb-compat); no `#if` on DuckDB versions at
 # call sites. Include path only -- DuckDB export()s extension targets, so
 # linking the duckdb_compat target would break CMake's generate step.
