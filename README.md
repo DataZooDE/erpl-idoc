@@ -1,7 +1,7 @@
 <a name="top"></a>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
-[![DuckDB](https://img.shields.io/badge/DuckDB-1.4.5%20%7C%201.5.6-green.svg)](https://duckdb.org)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg)](https://duckdb.org)
 [![Community Extension](https://img.shields.io/badge/DuckDB-Community%20Extension-informational.svg)](https://duckdb.org/community_extensions/)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
@@ -57,10 +57,11 @@ That’s it — no SAP connection required to read, write, or convert IDoc files
 
 ### Platforms and DuckDB versions
 
-CI builds and deploys the extension for **DuckDB v1.5.6** and the **v1.4.5 LTS** line on `linux_amd64`,
+CI builds and deploys the extension for **DuckDB v1.5.6** on `linux_amd64`,
 `linux_arm64`, `osx_amd64`, `osx_arm64` and `windows_amd64`. The release gate installs the built artifact into
 the official DuckDB CLI and calls a function on every one of those platforms. WebAssembly and the `windows_amd64_mingw`/`rtools` builds are not
-published. Workflow: `.github/workflows/MainDistributionPipeline.yml`. To build from source, see the section at the end.
+published. DuckDB 2.0 is built and unit-tested in CI but not published to get.erpl.io. DuckDB 1.4.x is no longer
+supported. Workflow: `.github/workflows/MainDistributionPipeline.yml`. To build from source, see the section at the end.
 
 ---
 
