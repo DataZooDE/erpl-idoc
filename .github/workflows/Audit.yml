@@ -32,3 +32,10 @@ jobs:
         run: git submodule update --init --depth 1 duckdb duckdb-compat
       - name: Compile the compat headers with stray headers on the include path
         run: scripts/check_compat_stray_headers.sh
+      # The bundled DuckDB is v2.0.1, which has every 2.0 header, so the run above
+      # plants nothing from list (a). Repeat against the v1.5.6 headers CI also
+      # builds with: there the 2.0-only headers are stray.
+      - name: Fetch the DuckDB v1.5.6 headers
+        run: git clone --depth 1 --branch v1.5.6 --filter=blob:none --sparse https://github.com/duckdb/duckdb.git /tmp/duckdb-v156 && git -C /tmp/duckdb-v156 sparse-checkout set src/include
+      - name: Compile the compat headers against v1.5.6 with stray 2.0 headers
+        run: DUCKDB_INCLUDE=/tmp/duckdb-v156/src/include scripts/check_compat_stray_headers.sh

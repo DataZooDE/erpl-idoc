@@ -23,6 +23,7 @@ import os
 import platform
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -41,48 +42,78 @@ EXTENSION_NAME = "erpl_idoc"
 SMOKE_QUERY = "SELECT sap_idoc_version('ok');"
 # ─────────────────────────────────────────────────────────────────────────────
 
-ARCH_TO_CLI_ZIP: dict[str, str] = {
-    "linux_amd64": "duckdb_cli-linux-amd64.zip",
-    "linux_arm64": "duckdb_cli-linux-arm64.zip",
-    "linux_amd64_musl": "duckdb_cli-linux-amd64.zip",
-    "osx_amd64": "duckdb_cli-osx-universal.zip",
-    "osx_arm64": "duckdb_cli-osx-universal.zip",
-    "windows_amd64": "duckdb_cli-windows-amd64.zip",
+# Official CLI archive names, newest naming first. DuckDB v2.0.1 renamed the
+# assets to duckdb-cli-<os>-<arch>.tar.gz (Windows: .zip); v1.5.6 still ships
+# duckdb_cli-<os>-<arch>.zip. Each name is tried in order; only a 404 moves on.
+ARCH_TO_CLI_ARCHIVES: dict[str, list[str]] = {
+    "linux_amd64": ["duckdb-cli-linux-amd64.tar.gz", "duckdb_cli-linux-amd64.zip"],
+    "linux_arm64": ["duckdb-cli-linux-arm64.tar.gz", "duckdb_cli-linux-arm64.zip"],
+    "linux_amd64_musl": ["duckdb-cli-linux-amd64-musl.tar.gz", "duckdb_cli-linux-amd64-musl.zip"],
+    "osx_amd64": ["duckdb-cli-osx-universal.tar.gz", "duckdb_cli-osx-universal.zip"],
+    "osx_arm64": ["duckdb-cli-osx-universal.tar.gz", "duckdb_cli-osx-universal.zip"],
+    "windows_amd64": ["duckdb-cli-windows-amd64.zip", "duckdb_cli-windows-amd64.zip"],
 }
 
 
-def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
-    zip_name = ARCH_TO_CLI_ZIP.get(arch)
-    if zip_name is None:
-        raise SystemExit(
-            f"Unsupported arch '{arch}'. Supported: {sorted(ARCH_TO_CLI_ZIP)}"
-        )
-
-    url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{zip_name}"
-    zip_path = os.path.join(dest_dir, "duckdb_cli.zip")
-
-    print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
-    # A transient network error must not block a release gate; a 404 (wrong asset name) is retried too
-    # but then fails with the URL in the message instead of a traceback.
+def _fetch(url: str, path: str) -> bool:
+    """Download url to path. False on 404 (asset not in this release); a
+    transient network error is retried, then fails with the URL."""
     for attempt in range(1, 4):
         try:
-            urllib.request.urlretrieve(url, zip_path)
-            break
+            urllib.request.urlretrieve(url, path)
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            err: Exception = exc
         except (urllib.error.URLError, OSError) as exc:
-            if attempt == 3:
-                raise SystemExit(f"Smoke test FAILED: could not download {url}: {exc}")
-            print(f"  download attempt {attempt} failed ({exc}); retrying")
-            time.sleep(5 * attempt)
+            err = exc
+        if attempt == 3:
+            raise SystemExit(f"Smoke test FAILED: could not download {url}: {err}")
+        print(f"  download attempt {attempt} failed ({err}); retrying")
+        time.sleep(5 * attempt)
+    return False
 
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dest_dir)
+
+def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
+    names = ARCH_TO_CLI_ARCHIVES.get(arch)
+    if names is None:
+        raise SystemExit(
+            f"Unsupported arch '{arch}'. Supported: {sorted(ARCH_TO_CLI_ARCHIVES)}"
+        )
+
+    archive_path = None
+    tried = []
+    for name in names:
+        url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{name}"
+        path = os.path.join(dest_dir, name)
+        print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
+        if _fetch(url, path):
+            archive_path = path
+            break
+        tried.append(url)
+        print("  not in this release (404), trying the next name")
+    if archive_path is None:
+        raise SystemExit(
+            "Smoke test FAILED: no DuckDB CLI archive found; tried:\n  " + "\n  ".join(tried)
+        )
+
+    if archive_path.endswith(".zip"):
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            members = zf.namelist()
+            zf.extractall(dest_dir)
+    else:
+        with tarfile.open(archive_path, "r:gz") as tf:
+            members = tf.getnames()
+            # Official DuckDB archive; the "data" filter still refuses absolute or escaping paths.
+            tf.extractall(dest_dir, filter="data")
 
     bin_name = "duckdb.exe" if platform.system() == "Windows" else "duckdb"
     binary = os.path.join(dest_dir, bin_name)
     if not os.path.isfile(binary):
         raise SystemExit(
             f"DuckDB binary not found after extraction: {binary}\n"
-            f"Zip contents: {zipfile.ZipFile(zip_path).namelist()}"
+            f"Archive contents: {members}"
         )
 
     if platform.system() != "Windows":
