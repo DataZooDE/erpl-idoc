@@ -1,7 +1,7 @@
 <a name="top"></a>
 
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
-[![DuckDB](https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg)](https://duckdb.org)
+[![DuckDB](https://img.shields.io/badge/DuckDB-2.0.1%20%7C%201.5.6-green.svg)](https://duckdb.org)
 [![Community Extension](https://img.shields.io/badge/DuckDB-Community%20Extension-informational.svg)](https://duckdb.org/community_extensions/)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
@@ -57,10 +57,11 @@ That’s it — no SAP connection required to read, write, or convert IDoc files
 
 ### Platforms and DuckDB versions
 
-CI builds and deploys the extension for **DuckDB v1.5.6** on `linux_amd64`,
-`linux_arm64`, `osx_amd64`, `osx_arm64` and `windows_amd64`. The release gate installs the built artifact into
+CI builds and deploys the extension for **DuckDB v2.0.1** and **DuckDB v1.5.6** on `linux_amd64`,
+`linux_arm64`, `osx_arm64` and `windows_amd64`, and for v1.5.6 also on `osx_amd64` (DuckDB 2.0's build
+tooling no longer produces `osx_amd64`). The release gate installs the built artifact into
 the official DuckDB CLI and calls a function on every one of those platforms. WebAssembly and the `windows_amd64_mingw`/`rtools` builds are not
-published. DuckDB 2.0 is built and unit-tested in CI but not published to get.erpl.io. DuckDB 1.4.x is no longer
+published. DuckDB 1.4.x is no longer
 supported. Workflow: `.github/workflows/MainDistributionPipeline.yml`. To build from source, see the section at the end.
 
 ---
@@ -523,6 +524,11 @@ cd erpl-idoc
 make debug          # or: make release
 make test           # SQL test suite
 ```
+
+The `duckdb` submodule tracks **DuckDB v2.0.1** (with `extension-ci-tools` on
+`v2.0-cyanoptera`); v1.5.6 is covered by CI. On 2.0 the `build/release/duckdb` shell does
+not link the extension statically: use `build/release/test/unittest`, or
+`LOAD 'build/release/extension/erpl_idoc/erpl_idoc.duckdb_extension'` in a shell started with `-unsigned`.
 
 `tinyxml2` (IDoc-XML) is pulled via vcpkg; set `VCPKG_ROOT` before building.
 

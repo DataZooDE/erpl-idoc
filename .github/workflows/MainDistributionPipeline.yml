@@ -35,24 +35,53 @@ jobs:
       - name: Compile and run format-core tests
         run: make core_tests_format
 
-  # ---- DuckDB 2.0 (pre-release) ----------------------------------------------
-  # community-extensions builds repo.ref against this exact 2.0 commit
-  # (DUCKDB_LATEST_STABLE in its build.yml); keep the SHA in step with it.
-  # Build + unit tests only: no smoke test (no stock 2.0 CLI to load into)
-  # and no deploy (an alpha binary only loads into that alpha).
-  duckdb-next-build:
-    name: Build extension binaries (v2.0 pre-release)
+  # ---- DuckDB v2.0.1 ---------------------------------------------------------
+  # community-extensions builds repo.ref against DuckDB 2.0 (DUCKDB_LATEST_STABLE
+  # in its build.yml). v2.0-cyanoptera no longer builds osx_amd64 (opt-in only),
+  # so it is excluded on this line: the smoke test must not wait for an artifact
+  # the build never produces. exclude_archs must stay identical across
+  # build/smoke-test/deploy.
+  duckdb-v201-build:
+    name: Build & test (v2.0.1)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      duckdb_version: d54cbbe3df17e8e5ce68312f483b4155836112aa
+      duckdb_version: v2.0.1
       ci_tools_version: v2.0-cyanoptera
       extension_name: erpl_idoc
+      # PR runs would otherwise build only linux_amd64 and windows_amd64, and
+      # the smoke test needs every artifact (macOS included).
+      reduced_ci_mode: disabled
       vcpkg_commit: 84bab45d415d22042bd0b9081aea57f362da3f35
-      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
+      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;osx_amd64;'
       extra_extension_config: |
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
           set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-gnu-unique")
         endif()
+
+  duckdb-v201-smoke-test:
+    name: Smoke test (v2.0.1)
+    needs: duckdb-v201-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v2.0.1
+      extension_name: erpl_idoc
+      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;osx_amd64;'
+
+  duckdb-v201-deploy:
+    name: Deploy (v2.0.1)
+    needs: [duckdb-v201-build, duckdb-v201-smoke-test]
+    uses: ./.github/workflows/_extension_deploy.yml
+    secrets: inherit
+    with:
+      duckdb_version: v2.0.1
+      # The deploy matrix is parsed from THIS ci-tools ref, so it lists exactly
+      # what the build above produced.
+      ci_tools_version: v2.0-cyanoptera
+      extension_name: erpl_idoc
+      exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;osx_amd64;'
+      deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      # Versioned paths only from the tag run (see the v1.5.6 deploy below).
+      deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
   # ---- DuckDB v1.5.6 ---------------------------------------------------------
   # vcpkg_commit: the older baseline (ce613c4) pulled msys2-runtime-3.5.4-2 for
@@ -98,6 +127,9 @@ jobs:
     secrets: inherit
     with:
       duckdb_version: v1.5.6
+      # The deploy matrix is parsed from THIS ci-tools ref (it still builds
+      # osx_amd64); the repo's own extension-ci-tools submodule is on cyanoptera.
+      ci_tools_version: v1.5-variegata
       extension_name: erpl_idoc
       exclude_archs: 'windows_amd64_rtools;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;'
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
