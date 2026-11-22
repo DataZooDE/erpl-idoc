@@ -13,10 +13,12 @@ SELECT * FROM sap_idoc_read('/nonexistent/file.idoc');
 https://github.com/DataZooDE/erpl-idoc/issues
 
 # The link is appended, not substituted: the real diagnostic must survive.
+# The path is DuckDB's own rendering of it: on Windows, DuckDB v2.0.1 reports the
+# resolved path ("D:\nonexistent\file.idoc"), so match either separator.
 statement error
 SELECT * FROM sap_idoc_read('/nonexistent/file.idoc');
 ----
-/nonexistent/file.idoc
+<REGEX>:.*nonexistent[/\\]file\.idoc.*
 
 # --- Scalar functions are annotated too, not just table functions.
 statement error
